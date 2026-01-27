@@ -114,6 +114,18 @@ impl PicoDeGallo {
             .flatten()
     }
 
+    /// Write `contents` to the I2C device at `address` and read back `count` bytes.
+    pub async fn i2c_write_read(&self, address: u8, contents: &[u8]) -> Result<(), PicoDeGalloError<I2cWriteFail>> {
+        self.client
+            .send_resp::<I2cWrite>(&I2cWriteReadRequest {
+                address,
+                contents,
+                count,
+            })
+            .await?
+            .flatten()
+    }
+
     /// Read `count` bytes from the SPI bus.
     ///
     /// An arbitrary limit of `u16::MAX` is imposed currently, that

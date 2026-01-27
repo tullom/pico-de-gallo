@@ -22,7 +22,7 @@ embassy-time = { version = "0.4", features = ["defmt", "defmt-timestamp-uptime"]
 embassy-usb = { version = "0.5.1", features = ["defmt"] }
 heapless = "0.9.1"
 panic-probe = "1.0.0"
-pico-de-gallo-internal = "0.1.0"
+pico-de-gallo-internal = { version = "0.1.0", path = "../pico-de-gallo-internal" }
 postcard-rpc = { version = "0.11",   features = ["embassy-usb-0_5-server"] }
 static_cell = "2.1.1"
 

@@ -16,6 +16,11 @@ pub type I2cReadResponse<'a> = Result<Vec<u8>, I2cReadFail>;
 #[cfg(not(feature = "use-std"))]
 pub type I2cReadResponse<'a> = Result<&'a [u8], I2cReadFail>;
 
+#[cfg(feature = "use-std")]
+pub type I2cWriteReadResponse<'a> = Result<Vec<u8>, I2cWriteReadFail>;
+#[cfg(not(feature = "use-std"))]
+pub type I2cWriteReadResponse<'a> = Result<&'a [u8], I2cWriteReadFail>;
+
 pub type SpiWriteResponse = Result<(), SpiWriteFail>;
 
 #[cfg(feature = "use-std")]
@@ -36,6 +41,7 @@ endpoints! {
     | PingEndpoint       | u32                     | u32                      | "ping"              |
     | I2cRead            | I2cReadRequest          | I2cReadResponse<'a>      | "i2c/read"          |
     | I2cWrite           | I2cWriteRequest<'a>     | I2cWriteResponse         | "i2c/write"         |
+    | I2cWriteRead       | I2cWriteReadRequest<'a> | I2cWriteReadResponse<'b> | "i2c/write-read"    |
     | SpiRead            | SpiReadRequest          | SpiReadResponse<'a>      | "spi/read"          |
     | SpiWrite           | SpiWriteRequest<'a>     | SpiWriteResponse         | "spi/write"         |
     | SpiFlush           | ()                      | SpiFlushResponse         | "spi/flush"         |
@@ -65,6 +71,16 @@ topics! {
 }
 
 // --- I2C
+
+#[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
+pub struct I2cWriteReadRequest<'a> {
+    pub address: u8,
+    pub contents: &'a [u8],
+    pub count: u16,
+}
+
+#[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
+pub struct I2cWriteReadFail;
 
 #[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
 pub struct I2cReadRequest {

@@ -16,11 +16,12 @@ use embassy_usb::{Config, UsbDevice};
 use pico_de_gallo_internal::{
     ENDPOINT_LIST, GpioGet, GpioGetRequest, GpioGetResponse, GpioPut, GpioPutRequest, GpioPutResponse, GpioState,
     GpioWaitForAny, GpioWaitForFalling, GpioWaitForHigh, GpioWaitForLow, GpioWaitForRising, GpioWaitRequest,
-    GpioWaitResponse, I2cRead, I2cReadFail, I2cReadRequest, I2cReadResponse, I2cWrite, I2cWriteFail, I2cWriteRequest,
-    I2cWriteResponse, MICROSOFT_VID, PICO_DE_GALLO_PID, PingEndpoint, SetConfiguration, SetConfigurationFail,
-    SetConfigurationRequest, SetConfigurationResponse, SpiFlush, SpiFlushFail, SpiFlushResponse, SpiPhase, SpiPolarity,
-    SpiRead, SpiReadFail, SpiReadRequest, SpiReadResponse, SpiWrite, SpiWriteFail, SpiWriteRequest, SpiWriteResponse,
-    TOPICS_IN_LIST, TOPICS_OUT_LIST, Version, VersionInfo,
+    GpioWaitResponse, I2cRead, I2cReadFail, I2cReadRequest, I2cReadResponse, I2cWrite, I2cWriteFail, I2cWriteRead,
+    I2cWriteReadFail, I2cWriteReadRequest, I2cWriteReadResponse, I2cWriteRequest, I2cWriteResponse, MICROSOFT_VID,
+    PICO_DE_GALLO_PID, PingEndpoint, SetConfiguration, SetConfigurationFail, SetConfigurationRequest,
+    SetConfigurationResponse, SpiFlush, SpiFlushFail, SpiFlushResponse, SpiPhase, SpiPolarity, SpiRead, SpiReadFail,
+    SpiReadRequest, SpiReadResponse, SpiWrite, SpiWriteFail, SpiWriteRequest, SpiWriteResponse, TOPICS_IN_LIST,
+    TOPICS_OUT_LIST, Version, VersionInfo,
 };
 use postcard_rpc::{
     define_dispatch,
@@ -153,6 +154,7 @@ define_dispatch! {
         | PingEndpoint       | blocking | ping_handler                  |
         | I2cRead            | async    | i2c_read_handler              |
         | I2cWrite           | async    | i2c_write_handler             |
+        | I2cWriteRead       | async    | i2c_write_read_handler        |
         | SpiRead            | async    | spi_read_handler              |
         | SpiWrite           | async    | spi_write_handler             |
         | SpiFlush           | async    | spi_flush_handler             |
@@ -261,6 +263,23 @@ async fn i2c_write_handler<'a>(
         .i2c
         .blocking_write(req.address, req.contents)
         .map_err(|_| I2cWriteFail)
+}
+
+async fn i2c_write_read_handler<'a>(
+    context: &'a mut Context,
+    _header: VarHeader,
+    req: I2cWriteReadRequest<'a>,
+) -> I2cWriteReadResponse<'a> {
+    if usize::from(req.count) > BUFFER_SIZE {
+        return Err(I2cWriteReadFail);
+    }
+
+    let len = ..usize::from(req.count);
+    context
+        .i2c
+        .blocking_write_read(req.address, req.contents, &mut context.buf[len])
+        .map_err(|_| I2cWriteReadFail)
+        .map(|_| &context.buf[len])
 }
 
 async fn spi_read_handler<'a>(
