@@ -137,6 +137,14 @@ enum SpiCommands {
 }
 
 impl Cli {
+    fn connect(&self) -> PicoDeGallo {
+        if let Some(serial_number) = &self.serial_number {
+            PicoDeGallo::new_with_serial_number(serial_number)
+        } else {
+            PicoDeGallo::new()
+        }
+    }
+
     pub async fn run(&self) -> Result<()> {
         match &self.command {
             None => Ok(()),
@@ -169,11 +177,7 @@ impl Cli {
     }
 
     async fn version(&self) -> Result<()> {
-        let pg = if let Some(serial_number) = &self.serial_number {
-            PicoDeGallo::new_with_serial_number(serial_number)
-        } else {
-            PicoDeGallo::new()
-        };
+        let pg = self.connect();
 
         match pg.version().await {
             Ok(version) => {
@@ -188,11 +192,7 @@ impl Cli {
     }
 
     async fn i2c_scan(&self, reserved: bool) -> Result<()> {
-        let pg = if let Some(serial_number) = &self.serial_number {
-            PicoDeGallo::new_with_serial_number(serial_number)
-        } else {
-            PicoDeGallo::new()
-        };
+        let pg = self.connect();
 
         let mut builder = Builder::with_capacity(17, 8);
         builder.push_record(
@@ -239,11 +239,7 @@ impl Cli {
     }
 
     async fn i2c_read(&self, address: &u8, count: &usize) -> Result<()> {
-        let pg = if let Some(serial_number) = &self.serial_number {
-            PicoDeGallo::new_with_serial_number(serial_number)
-        } else {
-            PicoDeGallo::new()
-        };
+        let pg = self.connect();
 
         let buf = match pg.i2c_read(*address, *count as u16).await {
             Ok(data) => data,
@@ -264,11 +260,7 @@ impl Cli {
     }
 
     async fn i2c_write(&self, address: &u8, bytes: &[u8]) -> Result<()> {
-        let pg = if let Some(serial_number) = &self.serial_number {
-            PicoDeGallo::new_with_serial_number(serial_number)
-        } else {
-            PicoDeGallo::new()
-        };
+        let pg = self.connect();
 
         if pg.i2c_write(*address, bytes).await.is_ok() {
             Ok(())
@@ -278,11 +270,7 @@ impl Cli {
     }
 
     async fn i2c_write_then_read(&self, address: &u8, bytes: &[u8], count: &usize) -> Result<()> {
-        let pg = if let Some(serial_number) = &self.serial_number {
-            PicoDeGallo::new_with_serial_number(serial_number)
-        } else {
-            PicoDeGallo::new()
-        };
+        let pg = self.connect();
 
         let buf = match pg.i2c_write_read(*address, bytes, *count as u16).await {
             Ok(data) => data,
@@ -303,11 +291,7 @@ impl Cli {
     }
 
     async fn spi_read(&self, count: &usize) -> Result<()> {
-        let pg = if let Some(serial_number) = &self.serial_number {
-            PicoDeGallo::new_with_serial_number(serial_number)
-        } else {
-            PicoDeGallo::new()
-        };
+        let pg = self.connect();
 
         let buf = match pg.spi_read(*count as u16).await {
             Ok(data) => data,
@@ -328,11 +312,7 @@ impl Cli {
     }
 
     async fn spi_write(&self, bytes: &[u8]) -> Result<()> {
-        let pg = if let Some(serial_number) = &self.serial_number {
-            PicoDeGallo::new_with_serial_number(serial_number)
-        } else {
-            PicoDeGallo::new()
-        };
+        let pg = self.connect();
 
         if pg.spi_write(bytes).await.is_ok() {
             Ok(())
@@ -353,11 +333,7 @@ impl Cli {
         spi_first_transition: bool,
         spi_idle_low: bool,
     ) -> Result<()> {
-        let pg = if let Some(serial_number) = &self.serial_number {
-            PicoDeGallo::new_with_serial_number(serial_number)
-        } else {
-            PicoDeGallo::new()
-        };
+        let pg = self.connect();
 
         let spi_polarity = if spi_idle_low {
             SpiPolarity::IdleLow
