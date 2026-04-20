@@ -41,12 +41,12 @@ async fn run(gallo: &PicoDeGallo) {
 
         if address & 0x0f == 0x0f {
             high += 1;
-            print!("\n");
+            println!();
 
             if high < 8 {
                 print!("{:x} ", high);
             }
         }
     }
-    print!("\n");
+    println!();
 }

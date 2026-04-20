@@ -169,8 +169,8 @@ impl Cli {
     }
 
     async fn version(&self) -> Result<()> {
-        let pg = if self.serial_number.is_some() {
-            PicoDeGallo::new_with_serial_number(self.serial_number.as_ref().unwrap())
+        let pg = if let Some(serial_number) = &self.serial_number {
+            PicoDeGallo::new_with_serial_number(serial_number)
         } else {
             PicoDeGallo::new()
         };
@@ -188,8 +188,8 @@ impl Cli {
     }
 
     async fn i2c_scan(&self, reserved: bool) -> Result<()> {
-        let pg = if self.serial_number.is_some() {
-            PicoDeGallo::new_with_serial_number(self.serial_number.as_ref().unwrap())
+        let pg = if let Some(serial_number) = &self.serial_number {
+            PicoDeGallo::new_with_serial_number(serial_number)
         } else {
             PicoDeGallo::new()
         };
@@ -239,8 +239,8 @@ impl Cli {
     }
 
     async fn i2c_read(&self, address: &u8, count: &usize) -> Result<()> {
-        let pg = if self.serial_number.is_some() {
-            PicoDeGallo::new_with_serial_number(self.serial_number.as_ref().unwrap())
+        let pg = if let Some(serial_number) = &self.serial_number {
+            PicoDeGallo::new_with_serial_number(serial_number)
         } else {
             PicoDeGallo::new()
         };
@@ -264,8 +264,8 @@ impl Cli {
     }
 
     async fn i2c_write(&self, address: &u8, bytes: &[u8]) -> Result<()> {
-        let pg = if self.serial_number.is_some() {
-            PicoDeGallo::new_with_serial_number(self.serial_number.as_ref().unwrap())
+        let pg = if let Some(serial_number) = &self.serial_number {
+            PicoDeGallo::new_with_serial_number(serial_number)
         } else {
             PicoDeGallo::new()
         };
@@ -278,8 +278,8 @@ impl Cli {
     }
 
     async fn i2c_write_then_read(&self, address: &u8, bytes: &[u8], count: &usize) -> Result<()> {
-        let pg = if self.serial_number.is_some() {
-            PicoDeGallo::new_with_serial_number(self.serial_number.as_ref().unwrap())
+        let pg = if let Some(serial_number) = &self.serial_number {
+            PicoDeGallo::new_with_serial_number(serial_number)
         } else {
             PicoDeGallo::new()
         };
@@ -303,8 +303,8 @@ impl Cli {
     }
 
     async fn spi_read(&self, count: &usize) -> Result<()> {
-        let pg = if self.serial_number.is_some() {
-            PicoDeGallo::new_with_serial_number(self.serial_number.as_ref().unwrap())
+        let pg = if let Some(serial_number) = &self.serial_number {
+            PicoDeGallo::new_with_serial_number(serial_number)
         } else {
             PicoDeGallo::new()
         };
@@ -328,8 +328,8 @@ impl Cli {
     }
 
     async fn spi_write(&self, bytes: &[u8]) -> Result<()> {
-        let pg = if self.serial_number.is_some() {
-            PicoDeGallo::new_with_serial_number(self.serial_number.as_ref().unwrap())
+        let pg = if let Some(serial_number) = &self.serial_number {
+            PicoDeGallo::new_with_serial_number(serial_number)
         } else {
             PicoDeGallo::new()
         };
@@ -353,8 +353,8 @@ impl Cli {
         spi_first_transition: bool,
         spi_idle_low: bool,
     ) -> Result<()> {
-        let pg = if self.serial_number.is_some() {
-            PicoDeGallo::new_with_serial_number(self.serial_number.as_ref().unwrap())
+        let pg = if let Some(serial_number) = &self.serial_number {
+            PicoDeGallo::new_with_serial_number(serial_number)
         } else {
             PicoDeGallo::new()
         };
