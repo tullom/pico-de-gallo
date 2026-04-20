@@ -148,6 +148,22 @@ pub enum GpioState {
     High,
 }
 
+impl From<bool> for GpioState {
+    fn from(value: bool) -> Self {
+        if value {
+            GpioState::High
+        } else {
+            GpioState::Low
+        }
+    }
+}
+
+impl From<GpioState> for bool {
+    fn from(state: GpioState) -> Self {
+        matches!(state, GpioState::High)
+    }
+}
+
 #[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
 pub struct GpioWaitRequest {
     pub pin: u8,
@@ -303,6 +319,18 @@ mod tests {
             let decoded: GpioState = from_bytes(&bytes).unwrap();
             assert_eq!(state, decoded);
         }
+    }
+
+    #[test]
+    fn gpio_state_from_bool() {
+        assert_eq!(GpioState::from(true), GpioState::High);
+        assert_eq!(GpioState::from(false), GpioState::Low);
+    }
+
+    #[test]
+    fn bool_from_gpio_state() {
+        assert_eq!(bool::from(GpioState::High), true);
+        assert_eq!(bool::from(GpioState::Low), false);
     }
 
     // --- Config round-trip tests ---
