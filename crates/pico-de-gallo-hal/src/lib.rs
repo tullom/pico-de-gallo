@@ -10,7 +10,6 @@ pub struct Hal {
     gallo: Arc<Mutex<PicoDeGallo>>,
     _runtime: Option<Runtime>,
     handle: Handle,
-    in_async: bool,
 }
 
 impl Default for Hal {
@@ -32,16 +31,16 @@ impl Hal {
     }
 
     fn new_inner(serial_number: Option<&str>) -> Self {
-        let (runtime, handle, in_async) = match Handle::try_current() {
-            Ok(handle) => (None, handle, true),
+        let (runtime, handle) = match Handle::try_current() {
+            Ok(handle) => (None, handle),
             Err(_) => {
                 let runtime = Runtime::new().unwrap();
                 let handle = runtime.handle().clone();
-                (Some(runtime), handle, false)
+                (Some(runtime), handle)
             }
         };
 
-        let gallo = if in_async {
+        let gallo = if runtime.is_none() {
             if let Some(serial_number) = serial_number {
                 PicoDeGallo::new_with_serial_number(serial_number)
             } else {
@@ -61,7 +60,6 @@ impl Hal {
             gallo: Arc::new(Mutex::new(gallo)),
             _runtime: runtime,
             handle,
-            in_async,
         }
     }
 
@@ -73,7 +71,7 @@ impl Hal {
         spi_phase: SpiPhase,
         spi_polarity: SpiPolarity,
     ) -> Result<(), Error> {
-        if self.in_async {
+        if Self::in_async_context() {
             block_in_place(|| {
                 self.set_config_inner(i2c_frequency, spi_frequency, spi_phase, spi_polarity)
             })
@@ -101,39 +99,31 @@ impl Hal {
     pub fn gpio(&self, pin: u8) -> Gpio {
         let gallo = Arc::clone(&self.gallo);
         let handle = self.handle.clone();
-        Gpio {
-            pin,
-            gallo,
-            handle,
-            in_async: self.in_async,
-        }
+        Gpio { pin, gallo, handle }
     }
 
     /// I2c
     pub fn i2c(&self) -> I2c {
         let gallo = Arc::clone(&self.gallo);
         let handle = self.handle.clone();
-        I2c {
-            gallo,
-            handle,
-            in_async: self.in_async,
-        }
+        I2c { gallo, handle }
     }
 
     /// Spi
     pub fn spi(&self) -> Spi {
         let gallo = Arc::clone(&self.gallo);
         let handle = self.handle.clone();
-        Spi {
-            gallo,
-            handle,
-            in_async: self.in_async,
-        }
+        Spi { gallo, handle }
     }
 
     /// Delay
     pub fn delay(&self) -> Delay {
         Delay
+    }
+
+    /// Returns true if we are currently inside a tokio async context.
+    fn in_async_context() -> bool {
+        Handle::try_current().is_ok()
     }
 }
 
@@ -172,7 +162,6 @@ pub struct Gpio {
     pin: u8,
     gallo: Arc<Mutex<PicoDeGallo>>,
     handle: Handle,
-    in_async: bool,
 }
 
 impl Gpio {
@@ -223,7 +212,7 @@ impl embedded_hal::digital::ErrorType for Gpio {
 
 impl embedded_hal::digital::OutputPin for Gpio {
     fn set_low(&mut self) -> std::result::Result<(), Self::Error> {
-        if self.in_async {
+        if Hal::in_async_context() {
             block_in_place(|| self.set_low_inner())
         } else {
             self.set_low_inner()
@@ -231,7 +220,7 @@ impl embedded_hal::digital::OutputPin for Gpio {
     }
 
     fn set_high(&mut self) -> std::result::Result<(), Self::Error> {
-        if self.in_async {
+        if Hal::in_async_context() {
             block_in_place(|| self.set_high_inner())
         } else {
             self.set_high_inner()
@@ -241,7 +230,7 @@ impl embedded_hal::digital::OutputPin for Gpio {
 
 impl embedded_hal::digital::InputPin for Gpio {
     fn is_low(&mut self) -> std::result::Result<bool, Self::Error> {
-        if self.in_async {
+        if Hal::in_async_context() {
             block_in_place(|| self.is_low_inner())
         } else {
             self.is_low_inner()
@@ -249,7 +238,7 @@ impl embedded_hal::digital::InputPin for Gpio {
     }
 
     fn is_high(&mut self) -> std::result::Result<bool, Self::Error> {
-        if self.in_async {
+        if Hal::in_async_context() {
             block_in_place(|| self.is_high_inner())
         } else {
             self.is_high_inner()
@@ -314,7 +303,6 @@ impl embedded_hal_async::digital::Wait for Gpio {
 pub struct I2c {
     gallo: Arc<Mutex<PicoDeGallo>>,
     handle: Handle,
-    in_async: bool,
 }
 
 impl I2c {
@@ -360,7 +348,7 @@ impl embedded_hal::i2c::I2c<embedded_hal::i2c::SevenBitAddress> for I2c {
         address: embedded_hal::i2c::SevenBitAddress,
         operations: &mut [embedded_hal::i2c::Operation<'_>],
     ) -> std::result::Result<(), Self::Error> {
-        if self.in_async {
+        if Hal::in_async_context() {
             block_in_place(|| self.transaction_inner(address, operations))
         } else {
             self.transaction_inner(address, operations)
@@ -401,7 +389,6 @@ impl embedded_hal_async::i2c::I2c<embedded_hal_async::i2c::SevenBitAddress> for 
 pub struct Spi {
     gallo: Arc<Mutex<PicoDeGallo>>,
     handle: Handle,
-    in_async: bool,
 }
 
 impl Spi {
@@ -453,7 +440,7 @@ impl embedded_hal::spi::ErrorType for Spi {
 
 impl embedded_hal::spi::SpiBus for Spi {
     fn read(&mut self, words: &mut [u8]) -> std::result::Result<(), Self::Error> {
-        if self.in_async {
+        if Hal::in_async_context() {
             block_in_place(|| self.read_inner(words))
         } else {
             self.read_inner(words)
@@ -461,7 +448,7 @@ impl embedded_hal::spi::SpiBus for Spi {
     }
 
     fn write(&mut self, words: &[u8]) -> std::result::Result<(), Self::Error> {
-        if self.in_async {
+        if Hal::in_async_context() {
             block_in_place(|| self.write_inner(words))
         } else {
             self.write_inner(words)
@@ -469,7 +456,7 @@ impl embedded_hal::spi::SpiBus for Spi {
     }
 
     fn transfer(&mut self, read: &mut [u8], write: &[u8]) -> std::result::Result<(), Self::Error> {
-        if self.in_async {
+        if Hal::in_async_context() {
             block_in_place(|| self.transfer_inner(read, write))
         } else {
             self.transfer_inner(read, write)
@@ -477,7 +464,7 @@ impl embedded_hal::spi::SpiBus for Spi {
     }
 
     fn transfer_in_place(&mut self, words: &mut [u8]) -> std::result::Result<(), Self::Error> {
-        if self.in_async {
+        if Hal::in_async_context() {
             block_in_place(|| {
                 let write_copy = words.to_vec();
                 self.transfer_inner(words, &write_copy)
@@ -489,7 +476,7 @@ impl embedded_hal::spi::SpiBus for Spi {
     }
 
     fn flush(&mut self) -> std::result::Result<(), Self::Error> {
-        if self.in_async {
+        if Hal::in_async_context() {
             block_in_place(|| self.flush_inner())
         } else {
             self.flush_inner()
