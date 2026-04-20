@@ -79,7 +79,7 @@ pub struct I2cWriteReadRequest<'a> {
     pub count: u16,
 }
 
-#[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Schema, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct I2cWriteReadFail;
 
 #[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
@@ -88,7 +88,7 @@ pub struct I2cReadRequest {
     pub count: u16,
 }
 
-#[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Schema, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct I2cReadFail;
 
 #[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
@@ -97,7 +97,7 @@ pub struct I2cWriteRequest<'a> {
     pub contents: &'a [u8],
 }
 
-#[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Schema, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct I2cWriteFail;
 
 // --- SPI
@@ -107,7 +107,7 @@ pub struct SpiReadRequest {
     pub count: u16,
 }
 
-#[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Schema, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SpiReadFail;
 
 #[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
@@ -115,10 +115,10 @@ pub struct SpiWriteRequest<'a> {
     pub contents: &'a [u8],
 }
 
-#[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Schema, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SpiWriteFail;
 
-#[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Schema, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SpiFlushFail;
 
 // --- GPIO
@@ -128,7 +128,7 @@ pub struct GpioGetRequest {
     pub pin: u8,
 }
 
-#[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Schema, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GpioGetFail;
 
 #[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
@@ -137,10 +137,12 @@ pub struct GpioPutRequest {
     pub state: GpioState,
 }
 
-#[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Schema, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GpioPutFail;
 
-#[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
+// WARNING: Do not reorder enum variants — postcard serializes by
+// variant index, not by discriminant. Reordering breaks wire compat.
+#[derive(Serialize, Deserialize, Schema, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GpioState {
     Low,
     High,
@@ -151,7 +153,7 @@ pub struct GpioWaitRequest {
     pub pin: u8,
 }
 
-#[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Schema, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GpioWaitFail;
 
 // --- Set config
@@ -164,19 +166,23 @@ pub struct SetConfigurationRequest {
     pub spi_polarity: SpiPolarity,
 }
 
-#[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
+// WARNING: Do not reorder enum variants — postcard serializes by
+// variant index, not by discriminant. Reordering breaks wire compat.
+#[derive(Serialize, Deserialize, Schema, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SpiPhase {
     CaptureOnFirstTransition = 0,
     CaptureOnSecondTransition = 1,
 }
 
-#[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
+// WARNING: Do not reorder enum variants — postcard serializes by
+// variant index, not by discriminant. Reordering breaks wire compat.
+#[derive(Serialize, Deserialize, Schema, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SpiPolarity {
     IdleLow = 0,
     IdleHigh = 1,
 }
 
-#[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Schema, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SetConfigurationFail;
 
 // --- Version

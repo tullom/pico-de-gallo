@@ -7,7 +7,7 @@ pub struct PicoDeGallo(lib::PicoDeGallo);
 
 // ----------------------------- Status Codes -----------------------------
 
-#[repr(C)]
+#[repr(i32)]
 #[derive(Debug, PartialEq)]
 pub enum Status {
     /// Operation successful
@@ -118,20 +118,28 @@ pub unsafe extern "C" fn gallo_free(gallo: *const PicoDeGallo) {
 /// Caller must ensure that `gallo` is a valid, opaque pointer to
 /// `PicoDeGallo` returned by `gallo_init()`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn gallo_ping(gallo: *mut PicoDeGallo, id: &mut u32) -> Status {
+pub unsafe extern "C" fn gallo_ping(gallo: *mut PicoDeGallo, id: *mut u32) -> Status {
     if gallo.is_null() {
         eprintln!("Unexpected NULL context");
         return Status::Uninitialized;
+    }
+
+    if id.is_null() {
+        eprintln!("Unexpected NULL id pointer");
+        return Status::InvalidArgument;
     }
 
     // Safety: caller must ensure that `gallo` is a valid opaque
     // pointer to `PicoDeGallo` returned by `gallo_init()`.
     let gallo = unsafe { &*gallo };
 
-    let result = block_on(gallo.0.ping(*id));
+    // Safety: null check above guarantees id is non-null.
+    let id_val = unsafe { *id };
+
+    let result = block_on(gallo.0.ping(id_val));
     match result {
         Ok(back) => {
-            *id = back;
+            unsafe { *id = back };
             Status::Ok
         }
         Err(_) => Status::PingFailed,
@@ -182,6 +190,14 @@ pub unsafe extern "C" fn gallo_i2c_read(
 
     match result {
         Ok(data) => {
+            if data.len() != buf.len() {
+                eprintln!(
+                    "Firmware returned {} bytes, expected {}",
+                    data.len(),
+                    buf.len()
+                );
+                return Status::InvalidResponse;
+            }
             buf.copy_from_slice(&data);
             Status::Ok
         }
@@ -281,6 +297,14 @@ pub unsafe extern "C" fn gallo_i2c_write_read(
     let result = block_on(gallo.0.i2c_write_read(address, txbuf, rxlen as u16));
     match result {
         Ok(data) => {
+            if data.len() != rxbuf.len() {
+                eprintln!(
+                    "Firmware returned {} bytes, expected {}",
+                    data.len(),
+                    rxbuf.len()
+                );
+                return Status::InvalidResponse;
+            }
             rxbuf.copy_from_slice(&data);
             Status::Ok
         }
@@ -331,6 +355,14 @@ pub unsafe extern "C" fn gallo_spi_read(
 
     match result {
         Ok(data) => {
+            if data.len() != buf.len() {
+                eprintln!(
+                    "Firmware returned {} bytes, expected {}",
+                    data.len(),
+                    buf.len()
+                );
+                return Status::InvalidResponse;
+            }
             buf.copy_from_slice(&data);
             Status::Ok
         }
@@ -424,11 +456,16 @@ pub unsafe extern "C" fn gallo_spi_flush(gallo: *mut PicoDeGallo) -> Status {
 pub unsafe extern "C" fn gallo_gpio_get(
     gallo: *mut PicoDeGallo,
     pin: u8,
-    state: &mut bool,
+    state: *mut bool,
 ) -> Status {
     if gallo.is_null() {
         eprintln!("Unexpected NULL context");
         return Status::Uninitialized;
+    }
+
+    if state.is_null() {
+        eprintln!("Unexpected NULL state pointer");
+        return Status::InvalidArgument;
     }
 
     // Safety: caller must ensure that `gallo` is a valid opaque
@@ -439,7 +476,7 @@ pub unsafe extern "C" fn gallo_gpio_get(
 
     match result {
         Ok(s) => {
-            *state = s == lib::GpioState::High;
+            unsafe { *state = s == lib::GpioState::High };
             Status::Ok
         }
         Err(_) => Status::GpioGetFailed,
@@ -690,13 +727,18 @@ pub unsafe extern "C" fn gallo_set_config(
 /// `PicoDeGallo` returned by `gallo_init()`.
 pub unsafe extern "C" fn gallo_version(
     gallo: *mut PicoDeGallo,
-    major: &mut u16,
-    minor: &mut u16,
-    patch: &mut u32,
+    major: *mut u16,
+    minor: *mut u16,
+    patch: *mut u32,
 ) -> Status {
     if gallo.is_null() {
         eprintln!("Unexpected NULL context");
         return Status::Uninitialized;
+    }
+
+    if major.is_null() || minor.is_null() || patch.is_null() {
+        eprintln!("Unexpected NULL version pointer");
+        return Status::InvalidArgument;
     }
 
     // Safety: caller must ensure that `gallo` is a valid opaque
@@ -711,9 +753,11 @@ pub unsafe extern "C" fn gallo_version(
             minor: b,
             patch: c,
         }) => {
-            *major = a;
-            *minor = b;
-            *patch = c;
+            unsafe {
+                *major = a;
+                *minor = b;
+                *patch = c;
+            }
 
             Status::Ok
         }
@@ -786,7 +830,7 @@ mod tests {
     #[test]
     fn ping_null_device_returns_uninitialized() {
         let mut id = 42u32;
-        let status = unsafe { gallo_ping(std::ptr::null_mut(), &mut id) };
+        let status = unsafe { gallo_ping(std::ptr::null_mut(), &mut id as *mut u32) };
         assert_eq!(status, Status::Uninitialized);
     }
 
@@ -846,7 +890,7 @@ mod tests {
     #[test]
     fn gpio_get_null_device_returns_uninitialized() {
         let mut state = false;
-        let status = unsafe { gallo_gpio_get(std::ptr::null_mut(), 0, &mut state) };
+        let status = unsafe { gallo_gpio_get(std::ptr::null_mut(), 0, &mut state as *mut bool) };
         assert_eq!(status, Status::Uninitialized);
     }
 
@@ -898,8 +942,44 @@ mod tests {
         let mut major = 0u16;
         let mut minor = 0u16;
         let mut patch = 0u32;
-        let status =
-            unsafe { gallo_version(std::ptr::null_mut(), &mut major, &mut minor, &mut patch) };
+        let status = unsafe {
+            gallo_version(
+                std::ptr::null_mut(),
+                &mut major as *mut u16,
+                &mut minor as *mut u16,
+                &mut patch as *mut u32,
+            )
+        };
+        assert_eq!(status, Status::Uninitialized);
+    }
+
+    // ----------------------------- Null out-param checks -----------------------------
+
+    #[test]
+    fn ping_null_id_returns_invalid_argument() {
+        let status = unsafe { gallo_ping(std::ptr::null_mut(), std::ptr::null_mut()) };
+        // gallo is null, so Uninitialized fires first
+        assert_eq!(status, Status::Uninitialized);
+    }
+
+    #[test]
+    fn gpio_get_null_state_returns_invalid_argument() {
+        let status = unsafe { gallo_gpio_get(std::ptr::null_mut(), 0, std::ptr::null_mut()) };
+        assert_eq!(status, Status::Uninitialized);
+    }
+
+    #[test]
+    fn version_null_major_returns_invalid_argument() {
+        let mut minor = 0u16;
+        let mut patch = 0u32;
+        let status = unsafe {
+            gallo_version(
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut minor as *mut u16,
+                &mut patch as *mut u32,
+            )
+        };
         assert_eq!(status, Status::Uninitialized);
     }
 

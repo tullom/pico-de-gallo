@@ -22,7 +22,8 @@ fn main() {
         10_000_000,
         SpiPhase::CaptureOnFirstTransition,
         SpiPolarity::IdleLow,
-    );
+    )
+    .expect("failed to set config");
 
     let cs = hal.gpio(0);
     let dc = hal.gpio(1);

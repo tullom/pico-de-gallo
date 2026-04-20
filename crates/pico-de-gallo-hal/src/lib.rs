@@ -72,14 +72,14 @@ impl Hal {
         spi_frequency: u32,
         spi_phase: SpiPhase,
         spi_polarity: SpiPolarity,
-    ) {
+    ) -> Result<(), Error> {
         if self.in_async {
             block_in_place(|| {
                 self.set_config_inner(i2c_frequency, spi_frequency, spi_phase, spi_polarity)
-            });
+            })
         } else {
-            self.set_config_inner(i2c_frequency, spi_frequency, spi_phase, spi_polarity);
-        };
+            self.set_config_inner(i2c_frequency, spi_frequency, spi_phase, spi_polarity)
+        }
     }
 
     fn set_config_inner(
@@ -88,13 +88,13 @@ impl Hal {
         spi_frequency: u32,
         spi_phase: SpiPhase,
         spi_polarity: SpiPolarity,
-    ) {
+    ) -> Result<(), Error> {
         let handle = self.handle.clone();
 
         let gallo = handle.block_on(self.gallo.lock());
         handle
             .block_on(gallo.set_config(i2c_frequency, spi_frequency, spi_phase, spi_polarity))
-            .unwrap();
+            .map_err(|_| Error::Other)
     }
 
     /// Gpio

@@ -1,6 +1,6 @@
 [package]
 name = "pico-de-gallo-internal"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 description = "Internal library for Pico de Gallo. Do not use!"
 categories = ["embedded", "hardware-support",]

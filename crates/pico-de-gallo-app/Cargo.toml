@@ -1,6 +1,6 @@
 [package]
 name = "gallo"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "Batch mode application to control a Pico de Gallo device"
 readme = "README.md"

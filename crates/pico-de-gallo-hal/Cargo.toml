@@ -1,6 +1,6 @@
 [package]
 name = "pico-de-gallo-hal"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 description = "embedded-hal and embedded-hal-async implementation for Pico de Gallo"
 readme = "README.md"

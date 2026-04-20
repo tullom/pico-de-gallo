@@ -19,7 +19,7 @@ pub struct Cli {
     serial_number: Option<String>,
 
     #[command(subcommand)]
-    command: Option<Commands>,
+    command: Commands,
 }
 
 #[derive(Subcommand, Debug)]
@@ -31,14 +31,14 @@ enum Commands {
     I2c {
         /// I2C commands
         #[command(subcommand)]
-        command: Option<I2cCommands>,
+        command: I2cCommands,
     },
 
     /// SPI access methods
     Spi {
         /// SPI commands
         #[command(subcommand)]
-        command: Option<SpiCommands>,
+        command: SpiCommands,
     },
 
     /// Set bus parameters for I2C and SPI
@@ -136,6 +136,16 @@ enum SpiCommands {
     },
 }
 
+fn print_hex_dump(data: &[u8]) {
+    for (i, b) in data.iter().enumerate() {
+        if i > 0 && i % 16 == 0 {
+            println!();
+        }
+        print!("{:02x} ", b);
+    }
+    println!();
+}
+
 impl Cli {
     fn connect(&self) -> PicoDeGallo {
         if let Some(serial_number) = &self.serial_number {
@@ -147,29 +157,26 @@ impl Cli {
 
     pub async fn run(&self) -> Result<()> {
         match &self.command {
-            None => Ok(()),
-            Some(Commands::Version) => self.version().await,
-            Some(Commands::I2c { command }) => match command {
-                None => Ok(()),
-                Some(I2cCommands::Scan { reserved }) => self.i2c_scan(*reserved).await,
-                Some(I2cCommands::Read { address, count }) => self.i2c_read(address, count).await,
-                Some(I2cCommands::Write { address, bytes }) => self.i2c_write(address, bytes).await,
-                Some(I2cCommands::WriteRead { address, bytes, count }) => {
+            Commands::Version => self.version().await,
+            Commands::I2c { command } => match command {
+                I2cCommands::Scan { reserved } => self.i2c_scan(*reserved).await,
+                I2cCommands::Read { address, count } => self.i2c_read(address, count).await,
+                I2cCommands::Write { address, bytes } => self.i2c_write(address, bytes).await,
+                I2cCommands::WriteRead { address, bytes, count } => {
                     self.i2c_write_then_read(address, bytes, count).await
                 }
             },
-            Some(Commands::Spi { command }) => match command {
-                None => Ok(()),
-                Some(SpiCommands::Read { count }) => self.spi_read(count).await,
-                Some(SpiCommands::Write { bytes }) => self.spi_write(bytes).await,
-                Some(SpiCommands::WriteRead { count, bytes }) => self.spi_write_then_read(bytes, count).await,
+            Commands::Spi { command } => match command {
+                SpiCommands::Read { count } => self.spi_read(count).await,
+                SpiCommands::Write { bytes } => self.spi_write(bytes).await,
+                SpiCommands::WriteRead { count, bytes } => self.spi_write_then_read(bytes, count).await,
             },
-            Some(Commands::SetConfig {
+            Commands::SetConfig {
                 i2c_frequency,
                 spi_frequency,
                 spi_first_transition,
                 spi_idle_low,
-            }) => {
+            } => {
                 self.set_config(*i2c_frequency, *spi_frequency, *spi_first_transition, *spi_idle_low)
                     .await
             }
@@ -243,18 +250,10 @@ impl Cli {
 
         let buf = match pg.i2c_read(*address, *count as u16).await {
             Ok(data) => data,
-            Err(_) => return Err(eyre!("i2c_read failed")),
+            Err(e) => return Err(eyre!("{:?}", e).wrap_err("i2c_read failed")),
         };
 
-        for (i, b) in buf.iter().enumerate() {
-            if i > 0 && i % 16 == 0 {
-                println!();
-            }
-
-            print!("{:02x} ", b);
-        }
-
-        println!();
+        print_hex_dump(&buf);
 
         Ok(())
     }
@@ -265,7 +264,7 @@ impl Cli {
         if pg.i2c_write(*address, bytes).await.is_ok() {
             Ok(())
         } else {
-            Err(eyre!("i2c_write failed"))
+            Err(eyre!("i2c_write failed for address {:#04x}", address))
         }
     }
 
@@ -274,18 +273,10 @@ impl Cli {
 
         let buf = match pg.i2c_write_read(*address, bytes, *count as u16).await {
             Ok(data) => data,
-            Err(_) => return Err(eyre!("i2c_read failed")),
+            Err(e) => return Err(eyre!("{:?}", e).wrap_err("i2c_write_read failed")),
         };
 
-        for (i, b) in buf.iter().enumerate() {
-            if i > 0 && i % 16 == 0 {
-                println!();
-            }
-
-            print!("{:02x} ", b);
-        }
-
-        println!();
+        print_hex_dump(&buf);
 
         Ok(())
     }
@@ -295,18 +286,10 @@ impl Cli {
 
         let buf = match pg.spi_read(*count as u16).await {
             Ok(data) => data,
-            Err(_) => return Err(eyre!("spi read failed")),
+            Err(e) => return Err(eyre!("{:?}", e).wrap_err("spi_read failed")),
         };
 
-        for (i, b) in buf.iter().enumerate() {
-            if i > 0 && i % 16 == 0 {
-                println!();
-            }
-
-            print!("{:02x} ", b);
-        }
-
-        println!();
+        print_hex_dump(&buf);
 
         Ok(())
     }
@@ -317,7 +300,7 @@ impl Cli {
         if pg.spi_write(bytes).await.is_ok() {
             Ok(())
         } else {
-            Err(eyre!("spi write failed"))
+            Err(eyre!("spi_write failed"))
         }
     }
 
@@ -425,7 +408,7 @@ mod tests {
     #[test]
     fn cli_version_subcommand() {
         let cli = Cli::try_parse_from(["gallo", "version"]).unwrap();
-        assert!(matches!(cli.command, Some(Commands::Version)));
+        assert!(matches!(cli.command, Commands::Version));
         assert!(cli.serial_number.is_none());
     }
 
@@ -433,16 +416,16 @@ mod tests {
     fn cli_version_with_serial() {
         let cli = Cli::try_parse_from(["gallo", "-s", "ABCD1234", "version"]).unwrap();
         assert_eq!(cli.serial_number.as_deref(), Some("ABCD1234"));
-        assert!(matches!(cli.command, Some(Commands::Version)));
+        assert!(matches!(cli.command, Commands::Version));
     }
 
     #[test]
     fn cli_i2c_read() {
         let cli = Cli::try_parse_from(["gallo", "i2c", "read", "-a", "0x48", "-c", "4"]).unwrap();
         match cli.command {
-            Some(Commands::I2c {
-                command: Some(I2cCommands::Read { address, count }),
-            }) => {
+            Commands::I2c {
+                command: I2cCommands::Read { address, count },
+            } => {
                 assert_eq!(address, 0x48);
                 assert_eq!(count, 4);
             }
@@ -454,9 +437,9 @@ mod tests {
     fn cli_i2c_write() {
         let cli = Cli::try_parse_from(["gallo", "i2c", "write", "-a", "0x50", "-b", "0xDE", "0xAD"]).unwrap();
         match cli.command {
-            Some(Commands::I2c {
-                command: Some(I2cCommands::Write { address, bytes }),
-            }) => {
+            Commands::I2c {
+                command: I2cCommands::Write { address, bytes },
+            } => {
                 assert_eq!(address, 0x50);
                 assert_eq!(bytes, vec![0xDE, 0xAD]);
             }
@@ -468,9 +451,9 @@ mod tests {
     fn cli_i2c_write_read() {
         let cli = Cli::try_parse_from(["gallo", "i2c", "write-read", "-a", "0x68", "-b", "0x01", "-c", "6"]).unwrap();
         match cli.command {
-            Some(Commands::I2c {
-                command: Some(I2cCommands::WriteRead { address, bytes, count }),
-            }) => {
+            Commands::I2c {
+                command: I2cCommands::WriteRead { address, bytes, count },
+            } => {
                 assert_eq!(address, 0x68);
                 assert_eq!(bytes, vec![0x01]);
                 assert_eq!(count, 6);
@@ -483,9 +466,9 @@ mod tests {
     fn cli_i2c_scan() {
         let cli = Cli::try_parse_from(["gallo", "i2c", "scan"]).unwrap();
         match cli.command {
-            Some(Commands::I2c {
-                command: Some(I2cCommands::Scan { reserved }),
-            }) => {
+            Commands::I2c {
+                command: I2cCommands::Scan { reserved },
+            } => {
                 assert!(!reserved);
             }
             _ => panic!("expected I2c Scan command"),
@@ -496,9 +479,9 @@ mod tests {
     fn cli_i2c_scan_reserved() {
         let cli = Cli::try_parse_from(["gallo", "i2c", "scan", "-r"]).unwrap();
         match cli.command {
-            Some(Commands::I2c {
-                command: Some(I2cCommands::Scan { reserved }),
-            }) => {
+            Commands::I2c {
+                command: I2cCommands::Scan { reserved },
+            } => {
                 assert!(reserved);
             }
             _ => panic!("expected I2c Scan command"),
@@ -509,9 +492,9 @@ mod tests {
     fn cli_spi_read() {
         let cli = Cli::try_parse_from(["gallo", "spi", "read", "-c", "16"]).unwrap();
         match cli.command {
-            Some(Commands::Spi {
-                command: Some(SpiCommands::Read { count }),
-            }) => {
+            Commands::Spi {
+                command: SpiCommands::Read { count },
+            } => {
                 assert_eq!(count, 16);
             }
             _ => panic!("expected Spi Read command"),
@@ -522,9 +505,9 @@ mod tests {
     fn cli_spi_write() {
         let cli = Cli::try_parse_from(["gallo", "spi", "write", "-b", "0xCA", "0xFE"]).unwrap();
         match cli.command {
-            Some(Commands::Spi {
-                command: Some(SpiCommands::Write { bytes }),
-            }) => {
+            Commands::Spi {
+                command: SpiCommands::Write { bytes },
+            } => {
                 assert_eq!(bytes, vec![0xCA, 0xFE]);
             }
             _ => panic!("expected Spi Write command"),
@@ -545,12 +528,12 @@ mod tests {
         ])
         .unwrap();
         match cli.command {
-            Some(Commands::SetConfig {
+            Commands::SetConfig {
                 i2c_frequency,
                 spi_frequency,
                 spi_first_transition,
                 spi_idle_low,
-            }) => {
+            } => {
                 assert_eq!(i2c_frequency, 400_000);
                 assert_eq!(spi_frequency, 1_000_000);
                 assert!(spi_first_transition);
@@ -572,11 +555,11 @@ mod tests {
         ])
         .unwrap();
         match cli.command {
-            Some(Commands::SetConfig {
+            Commands::SetConfig {
                 spi_first_transition,
                 spi_idle_low,
                 ..
-            }) => {
+            } => {
                 assert!(!spi_first_transition);
                 assert!(!spi_idle_low);
             }
@@ -600,6 +583,18 @@ mod tests {
     #[test]
     fn cli_unknown_subcommand_fails() {
         let result = Cli::try_parse_from(["gallo", "uart"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn cli_i2c_without_subcommand_fails() {
+        let result = Cli::try_parse_from(["gallo", "i2c"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn cli_spi_without_subcommand_fails() {
+        let result = Cli::try_parse_from(["gallo", "spi"]);
         assert!(result.is_err());
     }
 }
