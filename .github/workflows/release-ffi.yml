@@ -51,11 +51,14 @@ jobs:
       - name: Build FFI
         run: cargo build --release --target ${{ matrix.target }} --manifest-path crates/pico-de-gallo-ffi/Cargo.toml
 
+      - name: Find generated header
+        run: cp $(find crates/target/ -path '*/pico-de-gallo-ffi-*/out/include/pico_de_gallo.h' | head -1) pico_de_gallo.h
+
       - name: Upload library asset
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: crates/pico-de-gallo-ffi/target/${{ matrix.target }}/release/libpico_de_gallo_ffi.so
+          file: crates/target/${{ matrix.target }}/release/libpico_de_gallo_ffi.so
           asset_name: ${{ matrix.target }}-libpico_de_gallo.so
           tag: ${{ github.ref }}
           overwrite: true
@@ -64,7 +67,7 @@ jobs:
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: crates/pico-de-gallo-ffi/include/pico_de_gallo.h
+          file: pico_de_gallo.h
           asset_name: pico_de_gallo.h
           tag: ${{ github.ref }}
           overwrite: true
@@ -95,7 +98,7 @@ jobs:
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: crates/pico-de-gallo-ffi/target/${{ matrix.target }}/release/pico_de_gallo_ffi.dll
+          file: crates/target/${{ matrix.target }}/release/pico_de_gallo_ffi.dll
           asset_name: ${{ matrix.target }}-pico_de_gallo.lib
           tag: ${{ github.ref }}
           overwrite: true
@@ -126,7 +129,7 @@ jobs:
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: crates/pico-de-gallo-ffi/target/${{ matrix.target }}/release/libpico_de_gallo_ffi.dylib
+          file: crates/target/${{ matrix.target }}/release/libpico_de_gallo_ffi.dylib
           asset_name: ${{ matrix.target }}-libpico_de_gallo.dylib
           tag: ${{ github.ref }}
           overwrite: true

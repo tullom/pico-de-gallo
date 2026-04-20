@@ -125,7 +125,7 @@ pub unsafe extern "C" fn gallo_ping(gallo: *mut PicoDeGallo, id: &mut u32) -> St
 
     // Safety: caller must ensure that `gallo` is a valid opaque
     // pointer to `PicoDeGallo` returned by `gallo_init()`.
-    let gallo = unsafe { Box::from_raw(gallo) };
+    let gallo = unsafe { &*gallo };
 
     let result = block_on(gallo.0.ping(*id));
     match result {
@@ -172,7 +172,7 @@ pub unsafe extern "C" fn gallo_i2c_read(
 
     // Safety: caller must ensure that `gallo` is a valid opaque
     // pointer to `PicoDeGallo` returned by `gallo_init()`.
-    let gallo = unsafe { Box::from_raw(gallo) };
+    let gallo = unsafe { &*gallo };
 
     // Safety: caller must ensure buf is valid for len bytes.
     let buf = unsafe { std::slice::from_raw_parts_mut(buf, len) };
@@ -221,7 +221,7 @@ pub unsafe extern "C" fn gallo_i2c_write(
 
     // Safety: caller must ensure that `gallo` is a valid opaque
     // pointer to `PicoDeGallo` returned by `gallo_init()`.
-    let gallo = unsafe { Box::from_raw(gallo) };
+    let gallo = unsafe { &*gallo };
 
     // Safety: caller must ensure buf is valid for len bytes.
     let buf = unsafe { std::slice::from_raw_parts(buf, len) };
@@ -269,7 +269,7 @@ pub unsafe extern "C" fn gallo_i2c_write_read(
 
     // Safety: caller must ensure that `gallo` is a valid opaque
     // pointer to `PicoDeGallo` returned by `gallo_init()`.
-    let gallo = unsafe { Box::from_raw(gallo) };
+    let gallo = unsafe { &*gallo };
 
     // Safety: caller must ensure txbuf is valid for txlen bytes.
     let txbuf = unsafe { std::slice::from_raw_parts(txbuf, txlen) };
@@ -321,7 +321,7 @@ pub unsafe extern "C" fn gallo_spi_read(
 
     // Safety: caller must ensure that `gallo` is a valid opaque
     // pointer to `PicoDeGallo` returned by `gallo_init()`.
-    let gallo = unsafe { Box::from_raw(gallo) };
+    let gallo = unsafe { &*gallo };
 
     // Safety: caller must ensure buf is valid for len bytes.
     let buf = unsafe { std::slice::from_raw_parts_mut(buf, len) };
@@ -369,7 +369,7 @@ pub unsafe extern "C" fn gallo_spi_write(
 
     // Safety: caller must ensure that `gallo` is a valid opaque
     // pointer to `PicoDeGallo` returned by `gallo_init()`.
-    let gallo = unsafe { Box::from_raw(gallo) };
+    let gallo = unsafe { &*gallo };
 
     // Safety: caller must ensure buf is valid for len bytes.
     let buf = unsafe { std::slice::from_raw_parts(buf, len) };
@@ -399,7 +399,7 @@ pub unsafe extern "C" fn gallo_spi_flush(gallo: *mut PicoDeGallo) -> Status {
 
     // Safety: caller must ensure that `gallo` is a valid opaque
     // pointer to `PicoDeGallo` returned by `gallo_init()`.
-    let gallo = unsafe { Box::from_raw(gallo) };
+    let gallo = unsafe { &*gallo };
 
     let result = block_on(gallo.0.spi_flush());
 
@@ -432,7 +432,7 @@ pub unsafe extern "C" fn gallo_gpio_get(
 
     // Safety: caller must ensure that `gallo` is a valid opaque
     // pointer to `PicoDeGallo` returned by `gallo_init()`.
-    let gallo = unsafe { Box::from_raw(gallo) };
+    let gallo = unsafe { &*gallo };
 
     let result = block_on(gallo.0.gpio_get(pin));
 
@@ -462,7 +462,7 @@ pub unsafe extern "C" fn gallo_gpio_put(gallo: *mut PicoDeGallo, pin: u8, state:
 
     // Safety: caller must ensure that `gallo` is a valid opaque
     // pointer to `PicoDeGallo` returned by `gallo_init()`.
-    let gallo = unsafe { Box::from_raw(gallo) };
+    let gallo = unsafe { &*gallo };
 
     let s = if state {
         lib::GpioState::High
@@ -494,7 +494,7 @@ pub unsafe extern "C" fn gallo_gpio_wait_for_high(gallo: *mut PicoDeGallo, pin: 
 
     // Safety: caller must ensure that `gallo` is a valid opaque
     // pointer to `PicoDeGallo` returned by `gallo_init()`.
-    let gallo = unsafe { Box::from_raw(gallo) };
+    let gallo = unsafe { &*gallo };
 
     let result = block_on(gallo.0.gpio_wait_for_high(pin));
 
@@ -521,7 +521,7 @@ pub unsafe extern "C" fn gallo_gpio_wait_for_low(gallo: *mut PicoDeGallo, pin: u
 
     // Safety: caller must ensure that `gallo` is a valid opaque
     // pointer to `PicoDeGallo` returned by `gallo_init()`.
-    let gallo = unsafe { Box::from_raw(gallo) };
+    let gallo = unsafe { &*gallo };
 
     let result = block_on(gallo.0.gpio_wait_for_low(pin));
 
@@ -551,7 +551,7 @@ pub unsafe extern "C" fn gallo_gpio_wait_for_rising_edge(
 
     // Safety: caller must ensure that `gallo` is a valid opaque
     // pointer to `PicoDeGallo` returned by `gallo_init()`.
-    let gallo = unsafe { Box::from_raw(gallo) };
+    let gallo = unsafe { &*gallo };
 
     let result = block_on(gallo.0.gpio_wait_for_rising_edge(pin));
 
@@ -581,7 +581,7 @@ pub unsafe extern "C" fn gallo_gpio_wait_for_falling_edge(
 
     // Safety: caller must ensure that `gallo` is a valid opaque
     // pointer to `PicoDeGallo` returned by `gallo_init()`.
-    let gallo = unsafe { Box::from_raw(gallo) };
+    let gallo = unsafe { &*gallo };
 
     let result = block_on(gallo.0.gpio_wait_for_falling_edge(pin));
 
@@ -608,7 +608,7 @@ pub unsafe extern "C" fn gallo_gpio_wait_for_any_edge(gallo: *mut PicoDeGallo, p
 
     // Safety: caller must ensure that `gallo` is a valid opaque
     // pointer to `PicoDeGallo` returned by `gallo_init()`.
-    let gallo = unsafe { Box::from_raw(gallo) };
+    let gallo = unsafe { &*gallo };
 
     let result = block_on(gallo.0.gpio_wait_for_any_edge(pin));
 
@@ -650,7 +650,7 @@ pub unsafe extern "C" fn gallo_set_config(
 
     // Safety: caller must ensure that `gallo` is a valid opaque
     // pointer to `PicoDeGallo` returned by `gallo_init()`.
-    let gallo = unsafe { Box::from_raw(gallo) };
+    let gallo = unsafe { &*gallo };
 
     let phase = if spi_phase {
         lib::SpiPhase::CaptureOnSecondTransition
@@ -700,7 +700,7 @@ pub unsafe extern "C" fn gallo_version(
 
     // Safety: caller must ensure that `gallo` is a valid opaque
     // pointer to `PicoDeGallo` returned by `gallo_init()`.
-    let gallo = unsafe { Box::from_raw(gallo) };
+    let gallo = unsafe { &*gallo };
 
     let result = block_on(gallo.0.version());
 
