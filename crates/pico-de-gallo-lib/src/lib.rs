@@ -73,7 +73,7 @@ impl<E> From<HostErr<WireError>> for PicoDeGalloError<E> {
 
 #[derive(Clone)]
 pub struct PicoDeGallo {
-    pub client: HostClient<WireError>,
+    client: HostClient<WireError>,
 }
 
 impl Default for PicoDeGallo {
