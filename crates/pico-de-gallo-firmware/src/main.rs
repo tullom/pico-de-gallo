@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use defmt::info;
+use defmt::{debug, info, warn};
 use embassy_embedded_hal::SetConfig;
 use embassy_executor::Spawner;
 use embassy_rp::bind_interrupts;
@@ -11,6 +11,9 @@ use embassy_rp::i2c::{self, I2c};
 use embassy_rp::peripherals::{DMA_CH0, DMA_CH1, I2C1, SPI0, USB};
 use embassy_rp::spi::{self, Phase, Polarity, Spi};
 use embassy_rp::usb::Driver;
+// Direct embassy-sync dep required: postcard-rpc's WireStorage is generic over
+// embassy_sync_0_7::blocking_mutex::raw::RawMutex, which is the same type as
+// embassy-sync 0.7's RawMutex (they share the same crate version).
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_usb::{Config, UsbDevice};
 use pico_de_gallo_internal::{
@@ -60,6 +63,11 @@ bind_interrupts!(struct Irqs {
 const NUM_GPIOS: usize = 8;
 const BUFFER_SIZE: usize = 512;
 
+/// Firmware application context holding all peripheral handles.
+///
+/// NOTE: `buf` is shared between I2C and SPI handlers. This is safe because
+/// postcard-rpc dispatches handlers serially (one at a time). If concurrent
+/// dispatch is ever enabled, separate buffers would be required.
 pub struct Context {
     i2c: I2c<'static, I2C1, i2c::Async>,
     spi: Spi<'static, SPI0, spi::Async>,
@@ -68,26 +76,28 @@ pub struct Context {
 }
 
 impl Context {
-    #[allow(clippy::too_many_arguments)]
     fn new(
         i2c: I2c<'static, I2C1, i2c::Async>,
         spi: Spi<'static, SPI0, spi::Async>,
-        gpio0: Flex<'static>,
-        gpio1: Flex<'static>,
-        gpio2: Flex<'static>,
-        gpio3: Flex<'static>,
-        gpio4: Flex<'static>,
-        gpio5: Flex<'static>,
-        gpio6: Flex<'static>,
-        gpio7: Flex<'static>,
+        gpios: [Flex<'static>; NUM_GPIOS],
     ) -> Self {
         Self {
             i2c,
             spi,
-            gpios: [gpio0, gpio1, gpio2, gpio3, gpio4, gpio5, gpio6, gpio7],
+            gpios,
             buf: [0; BUFFER_SIZE],
         }
     }
+}
+
+/// Helper macro to get a GPIO pin by index, set it as input, and return a
+/// mutable reference. Returns the appropriate error type on out-of-bounds.
+macro_rules! gpio_input {
+    ($context:expr, $pin:expr, $err:expr) => {{
+        let gpio = $context.gpios.get_mut(usize::from($pin)).ok_or($err)?;
+        gpio.set_as_input();
+        gpio
+    }};
 }
 
 type AppDriver = Driver<'static, USB>;
@@ -101,11 +111,15 @@ static PBUFS: ConstStaticCell<BufStorage> = ConstStaticCell::new(BufStorage::new
 static STORAGE: AppStorage = AppStorage::new();
 
 fn usb_config() -> Config<'static> {
-    // Obtain the flash ID
-    let unique_id: u64 = embassy_rp::otp::get_chipid().unwrap();
+    // Obtain the chip unique ID for USB serial number.
+    // Falls back to "UNKNOWN" if OTP read fails (e.g. on some dev boards).
+    let unique_id: u64 = embassy_rp::otp::get_chipid().unwrap_or_else(|e| {
+        warn!("Failed to read chip ID: {:?}, using fallback serial", e);
+        0
+    });
+
     static SERIAL_STRING: StaticCell<[u8; 16]> = StaticCell::new();
-    let mut ser_buf = [b' '; 16];
-    // This is a simple number-to-hex formatting
+    let mut ser_buf = [b'0'; 16];
     unique_id
         .to_be_bytes()
         .iter()
@@ -122,9 +136,9 @@ fn usb_config() -> Config<'static> {
             }
         });
     let ser_buf = SERIAL_STRING.init(ser_buf);
+    // Safety: ser_buf contains only ASCII hex digits, which are valid UTF-8.
     let ser_buf = core::str::from_utf8(ser_buf.as_slice()).unwrap();
 
-    // Create embassy-usb Config
     let mut config = Config::new(MICROSOFT_VID, PICO_DE_GALLO_PID);
     config.manufacturer = Some("Microsoft");
     config.product = Some("Pico de Gallo");
@@ -202,16 +216,18 @@ async fn main(spawner: Spawner) {
         embassy_rp::spi::Config::default(),
     );
 
-    let gpio8 = embassy_rp::gpio::Flex::new(p.PIN_8);
-    let gpio9 = embassy_rp::gpio::Flex::new(p.PIN_9);
-    let gpio10 = embassy_rp::gpio::Flex::new(p.PIN_10);
-    let gpio11 = embassy_rp::gpio::Flex::new(p.PIN_11);
-    let gpio12 = embassy_rp::gpio::Flex::new(p.PIN_12);
-    let gpio13 = embassy_rp::gpio::Flex::new(p.PIN_13);
-    let gpio14 = embassy_rp::gpio::Flex::new(p.PIN_14);
-    let gpio15 = embassy_rp::gpio::Flex::new(p.PIN_15);
+    let gpios = [
+        Flex::new(p.PIN_8),
+        Flex::new(p.PIN_9),
+        Flex::new(p.PIN_10),
+        Flex::new(p.PIN_11),
+        Flex::new(p.PIN_12),
+        Flex::new(p.PIN_13),
+        Flex::new(p.PIN_14),
+        Flex::new(p.PIN_15),
+    ];
 
-    let context = Context::new(i2c, spi, gpio8, gpio9, gpio10, gpio11, gpio12, gpio13, gpio14, gpio15);
+    let context = Context::new(i2c, spi, gpios);
 
     let (device, tx_impl, rx_impl) = STORAGE.init(
         driver,
@@ -237,10 +253,10 @@ pub async fn usb_task(mut usb: UsbDevice<'static, AppDriver>) {
     usb.run().await;
 }
 
-// ---
+// --- Handlers ---
 
 fn ping_handler(_context: &mut Context, _header: VarHeader, rqst: u32) -> u32 {
-    info!("ping");
+    info!("ping: {=u32:#x}", rqst);
     rqst
 }
 
@@ -249,16 +265,20 @@ async fn i2c_read_handler<'a>(
     _header: VarHeader,
     req: I2cReadRequest,
 ) -> I2cReadResponse<'a> {
-    if usize::from(req.count) > BUFFER_SIZE {
+    let count = usize::from(req.count);
+    if count > BUFFER_SIZE {
+        warn!("i2c read: requested count {} exceeds buffer", count);
         return Err(I2cReadFail);
     }
 
-    let len = ..usize::from(req.count);
+    debug!("i2c read: addr={=u8:#x} count={=usize}", req.address, count);
+    let buf = &mut context.buf[..count];
     context
         .i2c
-        .blocking_read(req.address, &mut context.buf[len])
-        .map_err(|_| I2cReadFail)
-        .map(|_| &context.buf[len])
+        .read_async(req.address, buf)
+        .await
+        .map_err(|_| I2cReadFail)?;
+    Ok(&context.buf[..count])
 }
 
 async fn i2c_write_handler<'a>(
@@ -266,9 +286,11 @@ async fn i2c_write_handler<'a>(
     _header: VarHeader,
     req: I2cWriteRequest<'a>,
 ) -> I2cWriteResponse {
+    debug!("i2c write: addr={=u8:#x} len={=usize}", req.address, req.contents.len());
     context
         .i2c
-        .blocking_write(req.address, req.contents)
+        .write_async(req.address, req.contents.iter().copied())
+        .await
         .map_err(|_| I2cWriteFail)
 }
 
@@ -277,16 +299,25 @@ async fn i2c_write_read_handler<'a>(
     _header: VarHeader,
     req: I2cWriteReadRequest<'a>,
 ) -> I2cWriteReadResponse<'a> {
-    if usize::from(req.count) > BUFFER_SIZE {
+    let count = usize::from(req.count);
+    if count > BUFFER_SIZE {
+        warn!("i2c write_read: requested count {} exceeds buffer", count);
         return Err(I2cWriteReadFail);
     }
 
-    let len = ..usize::from(req.count);
+    debug!(
+        "i2c write_read: addr={=u8:#x} write_len={=usize} read_count={=usize}",
+        req.address,
+        req.contents.len(),
+        count
+    );
+    let buf = &mut context.buf[..count];
     context
         .i2c
-        .blocking_write_read(req.address, req.contents, &mut context.buf[len])
-        .map_err(|_| I2cWriteReadFail)
-        .map(|_| &context.buf[len])
+        .write_read_async(req.address, req.contents.iter().copied(), buf)
+        .await
+        .map_err(|_| I2cWriteReadFail)?;
+    Ok(&context.buf[..count])
 }
 
 async fn spi_read_handler<'a>(
@@ -294,16 +325,16 @@ async fn spi_read_handler<'a>(
     _header: VarHeader,
     req: SpiReadRequest,
 ) -> SpiReadResponse<'a> {
-    if usize::from(req.count) > BUFFER_SIZE {
+    let count = usize::from(req.count);
+    if count > BUFFER_SIZE {
+        warn!("spi read: requested count {} exceeds buffer", count);
         return Err(SpiReadFail);
     }
 
-    let len = ..usize::from(req.count);
-    context
-        .spi
-        .blocking_read(&mut context.buf[len])
-        .map_err(|_| SpiReadFail)
-        .map(|_| &context.buf[len])
+    debug!("spi read: count={=usize}", count);
+    let buf = &mut context.buf[..count];
+    context.spi.read(buf).await.map_err(|_| SpiReadFail)?;
+    Ok(&context.buf[..count])
 }
 
 async fn spi_write_handler<'a>(
@@ -311,18 +342,18 @@ async fn spi_write_handler<'a>(
     _header: VarHeader,
     req: SpiWriteRequest<'a>,
 ) -> SpiWriteResponse {
-    context.spi.blocking_write(req.contents).map_err(|_| SpiWriteFail)
+    debug!("spi write: len={=usize}", req.contents.len());
+    context.spi.write(req.contents).await.map_err(|_| SpiWriteFail)
 }
 
 async fn spi_flush_handler(context: &mut Context, _header: VarHeader, _req: ()) -> SpiFlushResponse {
+    debug!("spi flush");
     context.spi.flush().map_err(|_| SpiFlushFail)
 }
 
 async fn gpio_get_handler(context: &mut Context, _header: VarHeader, req: GpioGetRequest) -> GpioGetResponse {
-    let pin = usize::from(req.pin);
-    let gpio = context.gpios.get_mut(pin).ok_or(GpioGetFail)?;
-
-    gpio.set_as_input();
+    let gpio = gpio_input!(context, req.pin, GpioGetFail);
+    debug!("gpio get: pin={=u8}", req.pin);
     match gpio.get_level() {
         Level::Low => Ok(GpioState::Low),
         Level::High => Ok(GpioState::High),
@@ -338,6 +369,7 @@ async fn gpio_put_handler(context: &mut Context, _header: VarHeader, req: GpioPu
         GpioState::High => Level::High,
     };
 
+    debug!("gpio put: pin={=u8} level={=u8}", req.pin, level as u8);
     gpio.set_as_output();
     gpio.set_level(level);
 
@@ -349,12 +381,9 @@ async fn gpio_wait_for_high_handler(
     _header: VarHeader,
     req: GpioWaitRequest,
 ) -> GpioWaitResponse {
-    let pin = usize::from(req.pin);
-    let gpio = context.gpios.get_mut(pin).ok_or(GpioWaitFail)?;
-
-    gpio.set_as_input();
+    let gpio = gpio_input!(context, req.pin, GpioWaitFail);
+    debug!("gpio wait_for_high: pin={=u8}", req.pin);
     gpio.wait_for_high().await;
-
     Ok(())
 }
 
@@ -363,12 +392,9 @@ async fn gpio_wait_for_low_handler(
     _header: VarHeader,
     req: GpioWaitRequest,
 ) -> GpioWaitResponse {
-    let pin = usize::from(req.pin);
-    let gpio = context.gpios.get_mut(pin).ok_or(GpioWaitFail)?;
-
-    gpio.set_as_input();
+    let gpio = gpio_input!(context, req.pin, GpioWaitFail);
+    debug!("gpio wait_for_low: pin={=u8}", req.pin);
     gpio.wait_for_low().await;
-
     Ok(())
 }
 
@@ -377,12 +403,9 @@ async fn gpio_wait_for_rising_handler(
     _header: VarHeader,
     req: GpioWaitRequest,
 ) -> GpioWaitResponse {
-    let pin = usize::from(req.pin);
-    let gpio = context.gpios.get_mut(pin).ok_or(GpioWaitFail)?;
-
-    gpio.set_as_input();
+    let gpio = gpio_input!(context, req.pin, GpioWaitFail);
+    debug!("gpio wait_for_rising: pin={=u8}", req.pin);
     gpio.wait_for_rising_edge().await;
-
     Ok(())
 }
 
@@ -391,12 +414,9 @@ async fn gpio_wait_for_falling_handler(
     _header: VarHeader,
     req: GpioWaitRequest,
 ) -> GpioWaitResponse {
-    let pin = usize::from(req.pin);
-    let gpio = context.gpios.get_mut(pin).ok_or(GpioWaitFail)?;
-
-    gpio.set_as_input();
+    let gpio = gpio_input!(context, req.pin, GpioWaitFail);
+    debug!("gpio wait_for_falling: pin={=u8}", req.pin);
     gpio.wait_for_falling_edge().await;
-
     Ok(())
 }
 
@@ -405,12 +425,9 @@ async fn gpio_wait_for_any_handler(
     _header: VarHeader,
     req: GpioWaitRequest,
 ) -> GpioWaitResponse {
-    let pin = usize::from(req.pin);
-    let gpio = context.gpios.get_mut(pin).ok_or(GpioWaitFail)?;
-
-    gpio.set_as_input();
+    let gpio = gpio_input!(context, req.pin, GpioWaitFail);
+    debug!("gpio wait_for_any: pin={=u8}", req.pin);
     gpio.wait_for_any_edge().await;
-
     Ok(())
 }
 
@@ -433,6 +450,10 @@ async fn set_config_handler(
         SpiPolarity::IdleHigh => Polarity::IdleHigh,
     };
 
+    debug!(
+        "set_config: i2c_freq={=u32} spi_freq={=u32}",
+        req.i2c_frequency, req.spi_frequency
+    );
     context.spi.set_config(&spi_config);
     context.i2c.set_config(&i2c_config).map_err(|_| SetConfigurationFail)
 }
