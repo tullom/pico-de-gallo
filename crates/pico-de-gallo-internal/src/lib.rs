@@ -8,9 +8,9 @@ pub const MICROSOFT_VID: u16 = 0x045e;
 pub const PICO_DE_GALLO_PID: u16 = 0x067d;
 
 /// Maximum number of bytes the firmware can handle in a single I2C or SPI
-/// read/write transaction. Requests exceeding this limit will be truncated
-/// by the firmware to this size.
-pub const MAX_TRANSFER_SIZE: usize = 512;
+/// transaction. Requests exceeding this limit will be rejected by the
+/// firmware with an error.
+pub const MAX_TRANSFER_SIZE: usize = 4096;
 
 // ---
 
@@ -34,6 +34,11 @@ pub type SpiReadResponse<'a> = Result<Vec<u8>, SpiReadFail>;
 pub type SpiReadResponse<'a> = Result<&'a [u8], SpiReadFail>;
 
 pub type SpiFlushResponse = Result<(), SpiFlushFail>;
+
+#[cfg(feature = "use-std")]
+pub type SpiTransferResponse<'a> = Result<Vec<u8>, SpiTransferFail>;
+#[cfg(not(feature = "use-std"))]
+pub type SpiTransferResponse<'a> = Result<&'a [u8], SpiTransferFail>;
 pub type GpioGetResponse = Result<GpioState, GpioGetFail>;
 pub type GpioPutResponse = Result<(), GpioPutFail>;
 pub type GpioWaitResponse = Result<(), GpioWaitFail>;
@@ -50,6 +55,7 @@ endpoints! {
     | SpiRead            | SpiReadRequest          | SpiReadResponse<'a>      | "spi/read"          |
     | SpiWrite           | SpiWriteRequest<'a>     | SpiWriteResponse         | "spi/write"         |
     | SpiFlush           | ()                      | SpiFlushResponse         | "spi/flush"         |
+    | SpiTransfer        | SpiTransferRequest<'a>  | SpiTransferResponse<'b>  | "spi/transfer"      |
     | GpioGet            | GpioGetRequest          | GpioGetResponse          | "gpio/get"          |
     | GpioPut            | GpioPutRequest          | GpioPutResponse          | "gpio/put"          |
     | GpioWaitForHigh    | GpioWaitRequest         | GpioWaitResponse         | "gpio/wait-high"    |
@@ -125,6 +131,14 @@ pub struct SpiWriteFail;
 
 #[derive(Serialize, Deserialize, Schema, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SpiFlushFail;
+
+#[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
+pub struct SpiTransferRequest<'a> {
+    pub contents: &'a [u8],
+}
+
+#[derive(Serialize, Deserialize, Schema, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpiTransferFail;
 
 // --- GPIO
 
@@ -284,6 +298,24 @@ mod tests {
         let req = SpiWriteRequest { contents: &data };
         let bytes = to_allocvec(&req).unwrap();
         let decoded: SpiWriteRequest = from_bytes(&bytes).unwrap();
+        assert_eq!(req, decoded);
+    }
+
+    #[test]
+    fn spi_transfer_request_round_trip() {
+        let data = [0x01, 0x02, 0x03, 0x04];
+        let req = SpiTransferRequest { contents: &data };
+        let bytes = to_allocvec(&req).unwrap();
+        let decoded: SpiTransferRequest = from_bytes(&bytes).unwrap();
+        assert_eq!(req, decoded);
+    }
+
+    #[test]
+    fn spi_transfer_request_max_size() {
+        let data = vec![0xAA; MAX_TRANSFER_SIZE];
+        let req = SpiTransferRequest { contents: &data };
+        let bytes = to_allocvec(&req).unwrap();
+        let decoded: SpiTransferRequest = from_bytes(&bytes).unwrap();
         assert_eq!(req, decoded);
     }
 

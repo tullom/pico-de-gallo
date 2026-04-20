@@ -143,7 +143,14 @@ enum SpiCommands {
         bytes: Vec<u8>,
     },
 
-    /// Write bytes followed by read bytes
+    /// Full-duplex SPI transfer (simultaneous write and read)
+    Transfer {
+        /// Bytes to send (received data will be the same length)
+        #[arg(short, long, num_args(1..), value_parser(parse_byte))]
+        bytes: Vec<u8>,
+    },
+
+    /// Write bytes followed by read bytes (half-duplex)
     WriteRead {
         /// Number of bytes to read
         #[arg(short, long)]
@@ -211,6 +218,7 @@ impl Cli {
             Commands::Spi { command } => match command {
                 SpiCommands::Read { count } => self.spi_read(count).await,
                 SpiCommands::Write { bytes } => self.spi_write(bytes).await,
+                SpiCommands::Transfer { bytes } => self.spi_transfer(bytes).await,
                 SpiCommands::WriteRead { count, bytes } => self.spi_write_then_read(bytes, count).await,
             },
             Commands::SetConfig {
@@ -359,6 +367,19 @@ impl Cli {
         } else {
             Err(eyre!("spi_write failed"))
         }
+    }
+
+    async fn spi_transfer(&self, bytes: &[u8]) -> Result<()> {
+        let pg = self.connect();
+
+        let buf = pg
+            .spi_transfer(bytes)
+            .await
+            .map_err(|e| eyre!("{:?}", e).wrap_err("spi_transfer failed"))?;
+
+        print_data(&buf, &self.format);
+
+        Ok(())
     }
 
     async fn spi_write_then_read(&self, bytes: &[u8], count: &usize) -> Result<()> {
@@ -583,6 +604,19 @@ mod tests {
                 assert_eq!(bytes, vec![0xCA, 0xFE]);
             }
             _ => panic!("expected Spi Write command"),
+        }
+    }
+
+    #[test]
+    fn cli_spi_transfer() {
+        let cli = Cli::try_parse_from(["gallo", "spi", "transfer", "-b", "0x01", "0x02", "0x03"]).unwrap();
+        match cli.command {
+            Commands::Spi {
+                command: SpiCommands::Transfer { bytes },
+            } => {
+                assert_eq!(bytes, vec![0x01, 0x02, 0x03]);
+            }
+            _ => panic!("expected Spi Transfer command"),
         }
     }
 

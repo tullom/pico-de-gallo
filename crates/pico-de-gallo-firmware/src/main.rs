@@ -23,8 +23,9 @@ use pico_de_gallo_internal::{
     I2cWrite, I2cWriteFail, I2cWriteRead, I2cWriteReadFail, I2cWriteReadRequest, I2cWriteReadResponse, I2cWriteRequest,
     I2cWriteResponse, MAX_TRANSFER_SIZE, MICROSOFT_VID, PICO_DE_GALLO_PID, PingEndpoint, SetConfiguration,
     SetConfigurationFail, SetConfigurationRequest, SetConfigurationResponse, SpiFlush, SpiFlushFail, SpiFlushResponse,
-    SpiPhase, SpiPolarity, SpiRead, SpiReadFail, SpiReadRequest, SpiReadResponse, SpiWrite, SpiWriteFail,
-    SpiWriteRequest, SpiWriteResponse, TOPICS_IN_LIST, TOPICS_OUT_LIST, Version, VersionInfo,
+    SpiPhase, SpiPolarity, SpiRead, SpiReadFail, SpiReadRequest, SpiReadResponse, SpiTransfer, SpiTransferFail,
+    SpiTransferRequest, SpiTransferResponse, SpiWrite, SpiWriteFail, SpiWriteRequest, SpiWriteResponse, TOPICS_IN_LIST,
+    TOPICS_OUT_LIST, Version, VersionInfo,
 };
 use postcard_rpc::{
     define_dispatch,
@@ -101,7 +102,7 @@ macro_rules! gpio_input {
 
 type AppDriver = Driver<'static, USB>;
 type AppStorage = WireStorage<ThreadModeRawMutex, AppDriver, 256, 256, 64, 256>;
-type BufStorage = PacketBuffers<1024, 1024>;
+type BufStorage = PacketBuffers<{ MAX_TRANSFER_SIZE + 1024 }, { MAX_TRANSFER_SIZE + 1024 }>;
 type AppTx = WireTxImpl<ThreadModeRawMutex, AppDriver>;
 type AppRx = WireRxImpl<AppDriver>;
 type AppServer = Server<AppTx, AppRx, WireRxBuf, PicoDeGallo>;
@@ -172,6 +173,7 @@ define_dispatch! {
         | SpiRead            | async    | spi_read_handler              |
         | SpiWrite           | async    | spi_write_handler             |
         | SpiFlush           | async    | spi_flush_handler             |
+        | SpiTransfer        | async    | spi_transfer_handler          |
         | GpioGet            | async    | gpio_get_handler              |
         | GpioPut            | async    | gpio_put_handler              |
         | GpioWaitForHigh    | async    | gpio_wait_for_high_handler    |
@@ -348,6 +350,27 @@ async fn spi_write_handler<'a>(
 async fn spi_flush_handler(context: &mut Context, _header: VarHeader, _req: ()) -> SpiFlushResponse {
     debug!("spi flush");
     context.spi.flush().map_err(|_| SpiFlushFail)
+}
+
+async fn spi_transfer_handler<'a>(
+    context: &'a mut Context,
+    _header: VarHeader,
+    req: SpiTransferRequest<'a>,
+) -> SpiTransferResponse<'a> {
+    let len = req.contents.len();
+    if len > MAX_TRANSFER_SIZE {
+        warn!("spi transfer: requested len {} exceeds buffer", len);
+        return Err(SpiTransferFail);
+    }
+
+    debug!("spi transfer: len={=usize}", len);
+    let buf = &mut context.buf[..len];
+    context
+        .spi
+        .transfer(buf, req.contents)
+        .await
+        .map_err(|_| SpiTransferFail)?;
+    Ok(&context.buf[..len])
 }
 
 async fn gpio_get_handler(context: &mut Context, _header: VarHeader, req: GpioGetRequest) -> GpioGetResponse {

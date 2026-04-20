@@ -4,7 +4,8 @@ use pico_de_gallo_internal::{
     GpioWaitForFalling, GpioWaitForHigh, GpioWaitForLow, GpioWaitForRising, GpioWaitRequest, I2cRead, I2cReadFail,
     I2cReadRequest, I2cWrite, I2cWriteFail, I2cWriteRead, I2cWriteReadFail, I2cWriteReadRequest, I2cWriteRequest,
     MICROSOFT_VID, PICO_DE_GALLO_PID, SetConfiguration, SetConfigurationFail, SetConfigurationRequest, SpiFlush,
-    SpiFlushFail, SpiRead, SpiReadFail, SpiReadRequest, SpiWrite, SpiWriteFail, SpiWriteRequest, Version,
+    SpiFlushFail, SpiRead, SpiReadFail, SpiReadRequest, SpiTransfer, SpiTransferFail, SpiTransferRequest, SpiWrite,
+    SpiWriteFail, SpiWriteRequest, Version,
 };
 
 pub use pico_de_gallo_internal::{GpioState, SpiPhase, SpiPolarity, VersionInfo};
@@ -174,6 +175,18 @@ impl PicoDeGallo {
     pub async fn spi_flush(&self) -> Result<(), PicoDeGalloError<SpiFlushFail>> {
         self.client
             .send_resp::<SpiFlush>(&())
+            .await?
+            .map_err(PicoDeGalloError::Endpoint)
+    }
+
+    /// Perform a full-duplex SPI transfer.
+    ///
+    /// Simultaneously sends `write_data` and receives the same number of bytes.
+    /// The firmware buffer is limited to [`pico_de_gallo_internal::MAX_TRANSFER_SIZE`]
+    /// bytes. Transfers exceeding this limit will be rejected.
+    pub async fn spi_transfer(&self, write_data: &[u8]) -> Result<Vec<u8>, PicoDeGalloError<SpiTransferFail>> {
+        self.client
+            .send_resp::<SpiTransfer>(&SpiTransferRequest { contents: write_data })
             .await?
             .map_err(PicoDeGalloError::Endpoint)
     }

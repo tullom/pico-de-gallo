@@ -423,6 +423,17 @@ impl Spi {
             .map_err(|_| Error::Other)
     }
 
+    fn transfer_inner(&mut self, read: &mut [u8], write: &[u8]) -> std::result::Result<(), Error> {
+        let handle = &self.handle;
+        let gallo = handle.block_on(self.gallo.lock());
+        let contents = handle
+            .block_on(gallo.spi_transfer(write))
+            .map_err(|_| Error::Other)?;
+        let len = read.len().min(contents.len());
+        read[..len].copy_from_slice(&contents[..len]);
+        Ok(())
+    }
+
     fn flush_inner(&mut self) -> std::result::Result<(), Error> {
         let handle = &self.handle;
         let gallo = handle.block_on(self.gallo.lock());
@@ -459,25 +470,21 @@ impl embedded_hal::spi::SpiBus for Spi {
 
     fn transfer(&mut self, read: &mut [u8], write: &[u8]) -> std::result::Result<(), Self::Error> {
         if self.in_async {
-            block_in_place(|| {
-                self.write_inner(write)?;
-                self.read_inner(read)
-            })
+            block_in_place(|| self.transfer_inner(read, write))
         } else {
-            self.write_inner(write)?;
-            self.read_inner(read)
+            self.transfer_inner(read, write)
         }
     }
 
     fn transfer_in_place(&mut self, words: &mut [u8]) -> std::result::Result<(), Self::Error> {
         if self.in_async {
             block_in_place(|| {
-                self.write_inner(words)?;
-                self.read_inner(words)
+                let write_copy = words.to_vec();
+                self.transfer_inner(words, &write_copy)
             })
         } else {
-            self.write_inner(words)?;
-            self.read_inner(words)
+            let write_copy = words.to_vec();
+            self.transfer_inner(words, &write_copy)
         }
     }
 
@@ -511,16 +518,29 @@ impl embedded_hal_async::spi::SpiBus for Spi {
         read: &mut [u8],
         write: &[u8],
     ) -> std::result::Result<(), Self::Error> {
-        self.write(write).await?;
-        self.read(read).await
+        let gallo = self.gallo.lock().await;
+        let contents = gallo
+            .spi_transfer(write)
+            .await
+            .map_err(|_| Self::Error::Other)?;
+        let len = read.len().min(contents.len());
+        read[..len].copy_from_slice(&contents[..len]);
+        Ok(())
     }
 
     async fn transfer_in_place(
         &mut self,
         words: &mut [u8],
     ) -> std::result::Result<(), Self::Error> {
-        self.write(words).await?;
-        self.read(words).await
+        let gallo = self.gallo.lock().await;
+        let write_copy = words.to_vec();
+        let contents = gallo
+            .spi_transfer(&write_copy)
+            .await
+            .map_err(|_| Self::Error::Other)?;
+        let len = words.len().min(contents.len());
+        words[..len].copy_from_slice(&contents[..len]);
+        Ok(())
     }
 
     async fn flush(&mut self) -> std::result::Result<(), Self::Error> {
