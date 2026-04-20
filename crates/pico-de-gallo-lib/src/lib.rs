@@ -54,6 +54,17 @@ pub enum PicoDeGalloError<E> {
     Endpoint(E),
 }
 
+impl<E: core::fmt::Display> core::fmt::Display for PicoDeGalloError<E> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Comms(e) => write!(f, "communication error: {e:?}"),
+            Self::Endpoint(e) => write!(f, "endpoint error: {e}"),
+        }
+    }
+}
+
+impl<E: core::fmt::Debug + core::fmt::Display> std::error::Error for PicoDeGalloError<E> {}
+
 impl<E> From<HostErr<WireError>> for PicoDeGalloError<E> {
     fn from(value: HostErr<WireError>) -> Self {
         Self::Comms(value)
@@ -343,6 +354,31 @@ mod tests {
         let comms_err: PicoDeGalloError<Infallible> = PicoDeGalloError::Comms(HostErr::Closed);
         let debug = format!("{:?}", comms_err);
         assert!(debug.contains("Comms"));
+    }
+
+    // --- PicoDeGalloError Display ---
+
+    #[test]
+    fn error_display_endpoint() {
+        use std::fmt::Display;
+        // Use a simple Display-implementing type
+        let err: PicoDeGalloError<&str> = PicoDeGalloError::Endpoint("sensor timeout");
+        let msg = format!("{err}");
+        assert!(msg.contains("endpoint error"));
+        assert!(msg.contains("sensor timeout"));
+    }
+
+    #[test]
+    fn error_display_comms() {
+        let err: PicoDeGalloError<&str> = PicoDeGalloError::Comms(HostErr::Closed);
+        let msg = format!("{err}");
+        assert!(msg.contains("communication error"));
+    }
+
+    #[test]
+    fn error_is_std_error() {
+        fn assert_error<E: std::error::Error>() {}
+        assert_error::<PicoDeGalloError<&str>>();
     }
 
     // --- Device enumeration ---
