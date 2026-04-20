@@ -17,4 +17,4 @@ pico-de-gallo-lib = { version = "0.2.0", path = "../pico-de-gallo-lib" }
 cbindgen = "0.29"
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "lib"]

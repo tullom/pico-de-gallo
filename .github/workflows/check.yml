@@ -181,24 +181,27 @@ jobs:
   #         command: check
   #         arguments: --all-features
 
-  # test:
-  #   runs-on: ubuntu-latest
+  test:
+    runs-on: ubuntu-latest
 
-  #   name: ubuntu / stable / test
+    name: ubuntu / stable / test
 
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #       with:
-  #         submodules: true
+    strategy:
+      matrix:
+        crate: [pico-de-gallo-internal, pico-de-gallo-ffi,
+        pico-de-gallo-hal, pico-de-gallo-lib, pico-de-gallo-app]
 
-  #     - name: Install stable
-  #       uses: dtolnay/rust-toolchain@stable
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
 
-  #     - name: cargo install cargo-hack
-  #       uses: taiki-e/install-action@cargo-hack
+      - name: Install stable
+        uses: dtolnay/rust-toolchain@stable
 
-  #     - name: cargo test
-  #       run: cargo hack --feature-powerset test
+      - name: cargo test
+        run: cargo test
+        working-directory: crates/${{ matrix.crate }}
 
   msrv:
     # check that we can build using the minimal rust version that is specified by this crate

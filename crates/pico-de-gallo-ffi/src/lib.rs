@@ -8,6 +8,7 @@ pub struct PicoDeGallo(lib::PicoDeGallo);
 // ----------------------------- Status Codes -----------------------------
 
 #[repr(C)]
+#[derive(Debug, PartialEq)]
 pub enum Status {
     /// Operation successful
     Ok = 0,
@@ -717,5 +718,217 @@ pub unsafe extern "C" fn gallo_version(
             Status::Ok
         }
         Err(_) => Status::VersionFailed,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    // ----------------------------- Status code invariants -----------------------------
+
+    #[test]
+    fn ok_is_zero() {
+        assert_eq!(Status::Ok as i32, 0);
+    }
+
+    #[test]
+    fn all_errors_are_negative() {
+        let error_codes = [
+            Status::I2cReadFailed as i32,
+            Status::I2cWriteFailed as i32,
+            Status::InvalidResponse as i32,
+            Status::Uninitialized as i32,
+            Status::InvalidArgument as i32,
+            Status::PingFailed as i32,
+            Status::SpiReadFailed as i32,
+            Status::SpiWriteFailed as i32,
+            Status::SpiFlushFailed as i32,
+            Status::GpioGetFailed as i32,
+            Status::GpioPutFailed as i32,
+            Status::GpioWaitFailed as i32,
+            Status::SetConfigFailed as i32,
+            Status::VersionFailed as i32,
+            Status::I2cWriteReadFailed as i32,
+        ];
+        for code in error_codes {
+            assert!(code < 0, "error code {code} should be negative");
+        }
+    }
+
+    #[test]
+    fn status_codes_are_distinct() {
+        let codes = [
+            Status::Ok as i32,
+            Status::I2cReadFailed as i32,
+            Status::I2cWriteFailed as i32,
+            Status::InvalidResponse as i32,
+            Status::Uninitialized as i32,
+            Status::InvalidArgument as i32,
+            Status::PingFailed as i32,
+            Status::SpiReadFailed as i32,
+            Status::SpiWriteFailed as i32,
+            Status::SpiFlushFailed as i32,
+            Status::GpioGetFailed as i32,
+            Status::GpioPutFailed as i32,
+            Status::GpioWaitFailed as i32,
+            Status::SetConfigFailed as i32,
+            Status::VersionFailed as i32,
+            Status::I2cWriteReadFailed as i32,
+        ];
+        let unique: HashSet<i32> = codes.iter().copied().collect();
+        assert_eq!(codes.len(), unique.len(), "duplicate status codes found");
+    }
+
+    // ----------------------------- Null pointer checks -----------------------------
+
+    #[test]
+    fn ping_null_device_returns_uninitialized() {
+        let mut id = 42u32;
+        let status = unsafe { gallo_ping(std::ptr::null_mut(), &mut id) };
+        assert_eq!(status, Status::Uninitialized);
+    }
+
+    #[test]
+    fn i2c_read_null_device_returns_uninitialized() {
+        let mut buf = [0u8; 4];
+        let status =
+            unsafe { gallo_i2c_read(std::ptr::null_mut(), 0x48, buf.as_mut_ptr(), buf.len()) };
+        assert_eq!(status, Status::Uninitialized);
+    }
+
+    #[test]
+    fn i2c_write_null_device_returns_uninitialized() {
+        let buf = [0u8; 4];
+        let status =
+            unsafe { gallo_i2c_write(std::ptr::null_mut(), 0x48, buf.as_ptr(), buf.len()) };
+        assert_eq!(status, Status::Uninitialized);
+    }
+
+    #[test]
+    fn i2c_write_read_null_device_returns_uninitialized() {
+        let txbuf = [0u8; 2];
+        let mut rxbuf = [0u8; 4];
+        let status = unsafe {
+            gallo_i2c_write_read(
+                std::ptr::null_mut(),
+                0x48,
+                txbuf.as_ptr(),
+                txbuf.len(),
+                rxbuf.as_mut_ptr(),
+                rxbuf.len(),
+            )
+        };
+        assert_eq!(status, Status::Uninitialized);
+    }
+
+    #[test]
+    fn spi_read_null_device_returns_uninitialized() {
+        let mut buf = [0u8; 4];
+        let status = unsafe { gallo_spi_read(std::ptr::null_mut(), buf.as_mut_ptr(), buf.len()) };
+        assert_eq!(status, Status::Uninitialized);
+    }
+
+    #[test]
+    fn spi_write_null_device_returns_uninitialized() {
+        let buf = [0u8; 4];
+        let status = unsafe { gallo_spi_write(std::ptr::null_mut(), buf.as_ptr(), buf.len()) };
+        assert_eq!(status, Status::Uninitialized);
+    }
+
+    #[test]
+    fn spi_flush_null_device_returns_uninitialized() {
+        let status = unsafe { gallo_spi_flush(std::ptr::null_mut()) };
+        assert_eq!(status, Status::Uninitialized);
+    }
+
+    #[test]
+    fn gpio_get_null_device_returns_uninitialized() {
+        let mut state = false;
+        let status = unsafe { gallo_gpio_get(std::ptr::null_mut(), 0, &mut state) };
+        assert_eq!(status, Status::Uninitialized);
+    }
+
+    #[test]
+    fn gpio_put_null_device_returns_uninitialized() {
+        let status = unsafe { gallo_gpio_put(std::ptr::null_mut(), 0, true) };
+        assert_eq!(status, Status::Uninitialized);
+    }
+
+    #[test]
+    fn gpio_wait_for_high_null_device_returns_uninitialized() {
+        let status = unsafe { gallo_gpio_wait_for_high(std::ptr::null_mut(), 0) };
+        assert_eq!(status, Status::Uninitialized);
+    }
+
+    #[test]
+    fn gpio_wait_for_low_null_device_returns_uninitialized() {
+        let status = unsafe { gallo_gpio_wait_for_low(std::ptr::null_mut(), 0) };
+        assert_eq!(status, Status::Uninitialized);
+    }
+
+    #[test]
+    fn gpio_wait_for_rising_edge_null_device_returns_uninitialized() {
+        let status = unsafe { gallo_gpio_wait_for_rising_edge(std::ptr::null_mut(), 0) };
+        assert_eq!(status, Status::Uninitialized);
+    }
+
+    #[test]
+    fn gpio_wait_for_falling_edge_null_device_returns_uninitialized() {
+        let status = unsafe { gallo_gpio_wait_for_falling_edge(std::ptr::null_mut(), 0) };
+        assert_eq!(status, Status::Uninitialized);
+    }
+
+    #[test]
+    fn gpio_wait_for_any_edge_null_device_returns_uninitialized() {
+        let status = unsafe { gallo_gpio_wait_for_any_edge(std::ptr::null_mut(), 0) };
+        assert_eq!(status, Status::Uninitialized);
+    }
+
+    #[test]
+    fn set_config_null_device_returns_uninitialized() {
+        let status =
+            unsafe { gallo_set_config(std::ptr::null_mut(), 400_000, 1_000_000, false, false) };
+        assert_eq!(status, Status::Uninitialized);
+    }
+
+    #[test]
+    fn version_null_device_returns_uninitialized() {
+        let mut major = 0u16;
+        let mut minor = 0u16;
+        let mut patch = 0u32;
+        let status =
+            unsafe { gallo_version(std::ptr::null_mut(), &mut major, &mut minor, &mut patch) };
+        assert_eq!(status, Status::Uninitialized);
+    }
+
+    // ----------------------------- Null buffer checks -----------------------------
+
+    #[test]
+    fn i2c_read_null_buffer_returns_invalid_argument() {
+        // Device is also null, so we get Uninitialized first.
+        // This tests that the null-device check fires before the buffer check.
+        let status = unsafe { gallo_i2c_read(std::ptr::null_mut(), 0x48, std::ptr::null_mut(), 4) };
+        assert_eq!(status, Status::Uninitialized);
+    }
+
+    #[test]
+    fn spi_read_null_buffer_returns_invalid_argument() {
+        let status = unsafe { gallo_spi_read(std::ptr::null_mut(), std::ptr::null_mut(), 4) };
+        assert_eq!(status, Status::Uninitialized);
+    }
+
+    // ----------------------------- Free safety -----------------------------
+
+    #[test]
+    fn free_null_is_safe() {
+        unsafe { gallo_free(std::ptr::null()) };
+    }
+
+    #[test]
+    fn init_with_null_serial_returns_null() {
+        let ptr = unsafe { gallo_init_with_serial_number(std::ptr::null()) };
+        assert!(ptr.is_null());
     }
 }
