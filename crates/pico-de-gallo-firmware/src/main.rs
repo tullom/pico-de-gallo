@@ -1117,11 +1117,7 @@ fn adc_channel_index(channel: AdcChannel) -> usize {
 }
 
 /// Handler for `adc/read` — single-shot ADC read returning a raw 12-bit value.
-fn adc_read_handler(
-    context: &mut Context,
-    _header: VarHeader,
-    req: AdcReadRequest,
-) -> AdcReadResponse {
+fn adc_read_handler(context: &mut Context, _header: VarHeader, req: AdcReadRequest) -> AdcReadResponse {
     let idx = adc_channel_index(req.channel);
     let ch = &mut context.adc_channels[idx];
 
@@ -1140,11 +1136,7 @@ fn adc_read_handler(
 /// Uses the RP2350 temperature formula (integer math):
 ///   V_µV = raw × 3_300_000 / 4096
 ///   T_m°C = 27_000 − (V_µV − 706_000) × 1000 / 1721
-fn adc_read_temperature_handler(
-    context: &mut Context,
-    _header: VarHeader,
-    _req: (),
-) -> AdcReadTemperatureResponse {
+fn adc_read_temperature_handler(context: &mut Context, _header: VarHeader, _req: ()) -> AdcReadTemperatureResponse {
     let ch = &mut context.adc_channels[NUM_ADC_CHANNELS - 1]; // temp sensor is last
 
     match context.adc.blocking_read(ch) {
@@ -1164,11 +1156,7 @@ fn adc_read_temperature_handler(
 }
 
 /// Handler for `adc/get-config` — returns ADC configuration info.
-fn adc_get_config_handler(
-    _context: &mut Context,
-    _header: VarHeader,
-    _req: (),
-) -> AdcGetConfigurationResponse {
+fn adc_get_config_handler(_context: &mut Context, _header: VarHeader, _req: ()) -> AdcGetConfigurationResponse {
     debug!("adc get config");
     AdcConfigurationInfo {
         resolution_bits: ADC_RESOLUTION_BITS,
