@@ -1,12 +1,13 @@
 //! Command-line interface for the Pico de Gallo USB bridge.
 //!
-//! The `gallo` CLI provides direct access to I2C, SPI, and GPIO peripherals
+//! The `gallo` CLI provides direct access to I2C, SPI, UART, and GPIO peripherals
 //! connected through a Pico de Gallo device. It is built with
 //! [clap](https://docs.rs/clap) and supports:
 //!
 //! - **I2C**: bus scanning, read, write, and write-then-read operations
 //! - **SPI**: read, write, full-duplex transfer, and write-then-read
-//! - **Configuration**: set I2C/SPI bus frequencies and SPI mode
+//! - **UART**: read, write, flush, and baud rate configuration
+//! - **Configuration**: set I2C/SPI/UART bus frequencies and SPI mode
 //! - **Device management**: list connected devices, query firmware version
 //!
 //! # Examples
@@ -160,6 +161,13 @@ enum Commands {
         #[command(subcommand)]
         command: GpioCommands,
     },
+
+    /// UART access methods
+    Uart {
+        /// UART commands
+        #[command(subcommand)]
+        command: UartCommands,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -308,6 +316,40 @@ enum GpioCommands {
     },
 }
 
+#[derive(Subcommand, Debug)]
+enum UartCommands {
+    /// Read bytes from the UART bus
+    Read {
+        /// Number of bytes to read (up to 4096)
+        #[arg(short, long)]
+        count: u16,
+
+        /// Read timeout in milliseconds (0 = non-blocking)
+        #[arg(short, long, default_value_t = 1000)]
+        timeout: u32,
+    },
+
+    /// Write bytes to the UART bus
+    Write {
+        /// Bytes to send
+        #[arg(short, long, num_args(1..), value_parser(parse_byte))]
+        bytes: Vec<u8>,
+    },
+
+    /// Flush the UART transmit buffer
+    Flush,
+
+    /// Set UART bus parameters
+    SetConfig {
+        /// Baud rate in bits per second (e.g. 9600, 115200)
+        #[arg(long)]
+        baud_rate: u32,
+    },
+
+    /// Query the current UART bus configuration
+    GetConfig,
+}
+
 fn print_data(data: &[u8], format: &OutputFormat) {
     match format {
         OutputFormat::Hex => {
@@ -383,6 +425,13 @@ impl Cli {
                 GpioCommands::Get { pin } => self.gpio_get(*pin).await,
                 GpioCommands::Put { pin, high } => self.gpio_put(*pin, *high).await,
                 GpioCommands::SetConfig { pin, direction, pull } => self.gpio_set_config(*pin, *direction, *pull).await,
+            },
+            Commands::Uart { command } => match command {
+                UartCommands::Read { count, timeout } => self.uart_read(*count, *timeout).await,
+                UartCommands::Write { bytes } => self.uart_write(bytes).await,
+                UartCommands::Flush => self.uart_flush().await,
+                UartCommands::SetConfig { baud_rate } => self.uart_set_config(*baud_rate).await,
+                UartCommands::GetConfig => self.uart_get_config().await,
             },
         }
     }
@@ -639,6 +688,67 @@ impl Cli {
             .map_err(|e| eyre!("{:?}", e).wrap_err("gpio set-config failed"))?;
 
         println!("GPIO pin {pin} configured as {direction:?} with pull {pull:?}");
+        Ok(())
+    }
+
+    async fn uart_read(&self, count: u16, timeout_ms: u32) -> Result<()> {
+        let pg = self.connect();
+
+        let data = pg
+            .uart_read(count, timeout_ms)
+            .await
+            .map_err(|e| eyre!("{:?}", e).wrap_err("uart read failed"))?;
+
+        if data.is_empty() {
+            println!("(no data received within timeout)");
+        } else {
+            print_data(&data, &self.format);
+        }
+        Ok(())
+    }
+
+    async fn uart_write(&self, bytes: &[u8]) -> Result<()> {
+        let pg = self.connect();
+
+        pg.uart_write(bytes)
+            .await
+            .map_err(|e| eyre!("{:?}", e).wrap_err("uart write failed"))?;
+
+        println!("Wrote {} byte(s)", bytes.len());
+        Ok(())
+    }
+
+    async fn uart_flush(&self) -> Result<()> {
+        let pg = self.connect();
+
+        pg.uart_flush()
+            .await
+            .map_err(|e| eyre!("{:?}", e).wrap_err("uart flush failed"))?;
+
+        println!("UART TX buffer flushed");
+        Ok(())
+    }
+
+    async fn uart_set_config(&self, baud_rate: u32) -> Result<()> {
+        let pg = self.connect();
+
+        pg.uart_set_config(baud_rate)
+            .await
+            .map_err(|e| eyre!("{:?}", e).wrap_err("uart set-config failed"))?;
+
+        println!("UART baud rate set to {baud_rate}");
+        Ok(())
+    }
+
+    async fn uart_get_config(&self) -> Result<()> {
+        let pg = self.connect();
+
+        let info = pg
+            .uart_get_config()
+            .await
+            .map_err(|e| eyre!("{:?}", e).wrap_err("uart get-config failed"))?;
+
+        println!("UART baud rate: {} bps", info.baud_rate);
         Ok(())
     }
 }

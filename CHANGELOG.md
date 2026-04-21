@@ -29,6 +29,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **internal**: 5 UART endpoints (`uart/read`, `uart/write`, `uart/flush`,
+  `uart/set-config`, `uart/get-config`), `UartError` enum (7 variants),
+  `UartReadRequest`, `UartWriteRequest`, `UartSetConfigurationRequest`, and
+  `UartConfigurationInfo` types. Response type aliases with `use-std` feature
+  gating for owned vs borrowed data.
+- **firmware**: UART0 support via `BufferedUart` (interrupt-driven, 1024-byte
+  TX/RX buffers). 5 UART handlers with timeout support on reads. Baud rate
+  validation (must be > 0). Uses GPIO0 (TX) and GPIO1 (RX).
+- **lib**: `uart_read(count, timeout_ms)`, `uart_write(contents)`,
+  `uart_flush()`, `uart_set_config(baud_rate)`, `uart_get_config()` methods.
+  Re-exported `UartError` and `UartConfigurationInfo`.
+- **hal**: `Uart` wrapper struct implementing `embedded_io::Read`,
+  `embedded_io::Write`, `embedded_io_async::Read`, and
+  `embedded_io_async::Write`. `UartHalError` type with `embedded_io::Error`
+  impl. `Hal::uart()` accessor with 1000ms default timeout.
+- **ffi**: 5 UART FFI functions (`gallo_uart_read`, `gallo_uart_write`,
+  `gallo_uart_flush`, `gallo_uart_set_config`, `gallo_uart_get_config`) and
+  10 status codes (-31 to -40).
+- **app**: `gallo uart` subcommand group with `read`, `write`, `flush`,
+  `set-config`, and `get-config` commands.
 - **internal**: `I2cScan` endpoint and `I2cScanRequest` type for firmware-side bus
   scanning. Returns a `Vec<u8>` of responding addresses — a single USB
   round-trip replaces 112 individual reads.

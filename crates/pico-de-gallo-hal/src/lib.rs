@@ -44,14 +44,16 @@
 
 use pico_de_gallo_lib::{
     GpioDirection, GpioError, GpioPull, GpioState, I2cError, PicoDeGallo, PicoDeGalloError,
-    SpiError,
+    SpiError, UartError,
 };
 use std::sync::Arc;
 use tokio::runtime::{Handle, Runtime};
 use tokio::sync::Mutex;
 use tokio::task::block_in_place;
 
-pub use pico_de_gallo_lib::{I2cFrequency, SpiConfigurationInfo, SpiPhase, SpiPolarity};
+pub use pico_de_gallo_lib::{
+    I2cFrequency, SpiConfigurationInfo, SpiPhase, SpiPolarity, UartConfigurationInfo,
+};
 
 /// Top-level HAL context for a Pico de Gallo device.
 ///
@@ -247,6 +249,17 @@ impl Hal {
         Spi { gallo, handle }
     }
 
+    /// Uart
+    pub fn uart(&self) -> Uart {
+        let gallo = Arc::clone(&self.gallo);
+        let handle = self.handle.clone();
+        Uart {
+            gallo,
+            handle,
+            timeout_ms: 1000,
+        }
+    }
+
     /// Create an [`SpiDevice`] that manages chip-select on `cs_pin`.
     ///
     /// The CS pin is driven high (deasserted) immediately. Each
@@ -399,6 +412,48 @@ impl From<PicoDeGalloError<SpiError>> for SpiHalError {
 impl embedded_hal::spi::Error for SpiHalError {
     fn kind(&self) -> embedded_hal::spi::ErrorKind {
         embedded_hal::spi::ErrorKind::Other
+    }
+}
+
+/// Error type for UART HAL operations.
+#[derive(Debug)]
+pub enum UartHalError {
+    /// A UART-specific error from the device firmware.
+    Uart(UartError),
+    /// A USB communication error.
+    Comms(String),
+}
+
+impl core::fmt::Display for UartHalError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Uart(e) => write!(f, "{e}"),
+            Self::Comms(msg) => write!(f, "communication error: {msg}"),
+        }
+    }
+}
+
+impl std::error::Error for UartHalError {}
+
+impl From<PicoDeGalloError<UartError>> for UartHalError {
+    fn from(e: PicoDeGalloError<UartError>) -> Self {
+        match e {
+            PicoDeGalloError::Endpoint(e) => Self::Uart(e),
+            PicoDeGalloError::Comms(c) => Self::Comms(format!("{c:?}")),
+        }
+    }
+}
+
+impl embedded_io::Error for UartHalError {
+    fn kind(&self) -> embedded_io::ErrorKind {
+        match self {
+            Self::Uart(UartError::Overrun) => embedded_io::ErrorKind::Other,
+            Self::Uart(UartError::Break) => embedded_io::ErrorKind::Other,
+            Self::Uart(UartError::Parity) => embedded_io::ErrorKind::Other,
+            Self::Uart(UartError::Framing) => embedded_io::ErrorKind::Other,
+            Self::Uart(UartError::InvalidBaudRate) => embedded_io::ErrorKind::InvalidInput,
+            _ => embedded_io::ErrorKind::Other,
+        }
     }
 }
 
@@ -1011,6 +1066,120 @@ impl embedded_hal_async::delay::DelayNs for Delay {
     }
 }
 
+// ----------------------------- Uart -----------------------------
+
+/// UART handle implementing [`embedded-io`] traits.
+///
+/// Obtained from [`Hal::uart`]. Supports blocking and async read/write.
+/// The baud rate can be changed at runtime with
+/// [`Hal::uart_set_config`].
+///
+/// **Read timeout**: UART reads use a configurable timeout (in
+/// milliseconds) to avoid blocking the USB bridge indefinitely. The
+/// default timeout is 1000 ms. Adjust with [`Uart::set_timeout_ms`].
+pub struct Uart {
+    gallo: Arc<Mutex<PicoDeGallo>>,
+    handle: Handle,
+    timeout_ms: u32,
+}
+
+impl Uart {
+    /// Set the read timeout in milliseconds.
+    ///
+    /// This controls how long [`embedded_io::Read::read`] waits for
+    /// data before returning an empty result.  A value of 0 means
+    /// non-blocking: return whatever is buffered immediately.
+    pub fn set_timeout_ms(&mut self, timeout_ms: u32) {
+        self.timeout_ms = timeout_ms;
+    }
+
+    fn read_inner(&mut self, buf: &mut [u8]) -> std::result::Result<usize, UartHalError> {
+        let handle = &self.handle;
+        let gallo = handle.block_on(self.gallo.lock());
+        let contents = handle
+            .block_on(gallo.uart_read(buf.len() as u16, self.timeout_ms))
+            .map_err(UartHalError::from)?;
+        let n = contents.len().min(buf.len());
+        buf[..n].copy_from_slice(&contents[..n]);
+        Ok(n)
+    }
+
+    fn write_inner(&mut self, buf: &[u8]) -> std::result::Result<usize, UartHalError> {
+        let handle = &self.handle;
+        let gallo = handle.block_on(self.gallo.lock());
+        handle
+            .block_on(gallo.uart_write(buf))
+            .map_err(UartHalError::from)?;
+        Ok(buf.len())
+    }
+
+    fn flush_inner(&mut self) -> std::result::Result<(), UartHalError> {
+        let handle = &self.handle;
+        let gallo = handle.block_on(self.gallo.lock());
+        handle
+            .block_on(gallo.uart_flush())
+            .map_err(UartHalError::from)
+    }
+}
+
+impl embedded_io::ErrorType for Uart {
+    type Error = UartHalError;
+}
+
+impl embedded_io::Read for Uart {
+    fn read(&mut self, buf: &mut [u8]) -> std::result::Result<usize, Self::Error> {
+        if Hal::in_async_context() {
+            block_in_place(|| self.read_inner(buf))
+        } else {
+            self.read_inner(buf)
+        }
+    }
+}
+
+impl embedded_io::Write for Uart {
+    fn write(&mut self, buf: &[u8]) -> std::result::Result<usize, Self::Error> {
+        if Hal::in_async_context() {
+            block_in_place(|| self.write_inner(buf))
+        } else {
+            self.write_inner(buf)
+        }
+    }
+
+    fn flush(&mut self) -> std::result::Result<(), Self::Error> {
+        if Hal::in_async_context() {
+            block_in_place(|| self.flush_inner())
+        } else {
+            self.flush_inner()
+        }
+    }
+}
+
+impl embedded_io_async::Read for Uart {
+    async fn read(&mut self, buf: &mut [u8]) -> std::result::Result<usize, Self::Error> {
+        let gallo = self.gallo.lock().await;
+        let contents = gallo
+            .uart_read(buf.len() as u16, self.timeout_ms)
+            .await
+            .map_err(UartHalError::from)?;
+        let n = contents.len().min(buf.len());
+        buf[..n].copy_from_slice(&contents[..n]);
+        Ok(n)
+    }
+}
+
+impl embedded_io_async::Write for Uart {
+    async fn write(&mut self, buf: &[u8]) -> std::result::Result<usize, Self::Error> {
+        let gallo = self.gallo.lock().await;
+        gallo.uart_write(buf).await.map_err(UartHalError::from)?;
+        Ok(buf.len())
+    }
+
+    async fn flush(&mut self) -> std::result::Result<(), Self::Error> {
+        let gallo = self.gallo.lock().await;
+        gallo.uart_flush().await.map_err(UartHalError::from)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1085,6 +1254,48 @@ mod tests {
         use embedded_hal::spi::Error as _;
         let err = SpiHalError::Comms("CS assert failed".into());
         assert_eq!(err.kind(), embedded_hal::spi::ErrorKind::Other);
+    }
+
+    #[test]
+    fn uart_error_kind_invalid_baud_rate() {
+        use embedded_io::Error as _;
+        let err = UartHalError::Uart(UartError::InvalidBaudRate);
+        assert_eq!(err.kind(), embedded_io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn uart_error_kind_overrun() {
+        use embedded_io::Error as _;
+        let err = UartHalError::Uart(UartError::Overrun);
+        assert_eq!(err.kind(), embedded_io::ErrorKind::Other);
+    }
+
+    #[test]
+    fn uart_error_kind_comms() {
+        use embedded_io::Error as _;
+        let err = UartHalError::Comms("USB disconnected".into());
+        assert_eq!(err.kind(), embedded_io::ErrorKind::Other);
+    }
+
+    #[test]
+    fn uart_hal_error_display() {
+        let err = UartHalError::Uart(UartError::Framing);
+        assert_eq!(format!("{err}"), "UART framing error");
+
+        let err = UartHalError::Comms("timeout".into());
+        assert_eq!(format!("{err}"), "communication error: timeout");
+    }
+
+    #[test]
+    fn uart_hal_error_from_endpoint() {
+        let e: UartHalError = PicoDeGalloError::Endpoint(UartError::Break).into();
+        assert!(matches!(e, UartHalError::Uart(UartError::Break)));
+    }
+
+    #[test]
+    fn uart_hal_error_from_comms() {
+        let e = UartHalError::Comms("USB disconnected".into());
+        assert!(matches!(e, UartHalError::Comms(_)));
     }
 
     // --- Runtime detection tests ---

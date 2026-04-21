@@ -30,7 +30,7 @@ complexity. Each entry explains *what*, *why*, and *what it unlocks*.
 | Phase | Description        | Items | Done | Status         |
 |-------|--------------------|-------|------|----------------|
 | **1** | Polish What Exists | 6     | 6    | ✅ Complete    |
-| **2** | New Protocols      | 6     | 0    | 🔴 Not started |
+| **2** | New Protocols      | 6     | 1    | 🟡 In progress |
 | **3** | Advanced Features  | 6     | 0    | 🔴 Not started |
 | **4** | Hardware Rev 2     | 6     | 0    | 🔴 Not started |
 
@@ -42,12 +42,13 @@ complexity. Each entry explains *what*, *why*, and *what it unlocks*.
 |-----------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | **I2C**         | 1 bus (I2C1), 7-bit addressing, read/write/write-read/scan, configurable frequency (Standard/Fast/Fast+)                                                       |
 | **SPI**         | 1 bus (SPI0), read/write/flush/transfer, configurable polarity/phase, DMA-backed                                                                               |
+| **UART**        | 1 bus (UART0), read/write/flush, configurable baud rate, interrupt-driven with 1024-byte TX/RX buffers                                                         |
 | **GPIO**        | 8 pins (GPIO8–15), input/output/wait-for-edge                                                                                                                  |
 | **USB**         | Full Speed (12 Mbps), postcard-rpc over raw USB bulk                                                                                                           |
-| **HAL traits**  | `I2c`, `SpiBus`, `InputPin`, `OutputPin`, `StatefulOutputPin`, `Wait`, `DelayNs` (sync + async)                                                                |
+| **HAL traits**  | `I2c`, `SpiBus`, `InputPin`, `OutputPin`, `StatefulOutputPin`, `Wait`, `DelayNs`, `embedded_io::{Read,Write}` (sync + async)                                   |
 | **Hardware**    | Bare landing board — Pico 2 module + pin headers + mounting holes. No level shifters, no ESD protection, no voltage regulation beyond what the Pico 2 provides |
 | **Host crates** | internal (protocol), lib (high-level API), hal (embedded-hal bridge), ffi (C bindings), app (CLI)                                                              |
-| **Endpoints**   | 22 total (ping, version, I2C×5, SPI×5, GPIO×8, config×4)                                                                                                       |
+| **Endpoints**   | 27 total (ping, version, I2C×5, SPI×5, UART×5, GPIO×8, config×4)                                                                                               |
 | **Tests**       | 115 unit + 3 doctests, CI on every push                                                                                                                        |
 
 ### What's Missing
@@ -92,7 +93,7 @@ each trait appears in crates.io drivers:
 2. `SpiDevice` / `SpiBus` — `SpiBus` done, **`SpiDevice` missing**
 3. `OutputPin` / `InputPin` — ✅ done
 4. `DelayNs` — ✅ done
-5. `embedded-io Read/Write` (UART) — **missing**
+5. `embedded-io Read/Write` (UART) — ✅ done
 6. `SetDutyCycle` (PWM) — **missing**
 
 ---
@@ -191,7 +192,7 @@ endpoint families.*
 
 |   | Item                                                   | Tracking |
 |---|--------------------------------------------------------|----------|
-| ☐ | [2.1 UART Support](#21-uart-support)                   | [#7](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/7) |
+| ☑ | [2.1 UART Support](#21-uart-support)                   | [#7](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/7) |
 | ☐ | [2.2 PWM Support](#22-pwm-support)                     | [#8](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/8) |
 | ☐ | [2.3 ADC Support](#23-adc-support)                     | [#9](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/9) |
 | ☐ | [2.4 Second I2C Bus](#24-second-i2c-bus)               | [#10](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/10) |
@@ -223,7 +224,10 @@ are already on the module header. A future board revision could add a
 dedicated UART header/connector, but it's not required.
 
 **Baud rates:** Support standard rates: 9600, 19200, 38400, 57600, 115200,
-230400, 460800, 921600. Expose as an enum with a `Custom(u32)` variant.
+230400, 460800, 921600. Expose as a plain `u32` — the RP2350 will silently
+clamp out-of-range values. Data bits, parity, and stop bits are deferred
+to a future version (requires unsafe PAC register writes while interrupts
+are active).
 
 ### 2.2 PWM Support
 

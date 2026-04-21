@@ -29,9 +29,14 @@
 //! - **GPIO types**: [`GpioGetRequest`], [`GpioPutRequest`], [`GpioWaitRequest`],
 //!   [`GpioState`], [`GpioDirection`], [`GpioPull`], [`GpioSetConfigurationRequest`],
 //!   and their shared error type [`GpioError`].
+//! - **UART types**: [`UartReadRequest`], [`UartWriteRequest`],
+//!   [`UartSetConfigurationRequest`], [`UartConfigurationInfo`],
+//!   and their shared error type [`UartError`].
 //! - **Configuration**: [`I2cSetConfigurationRequest`], [`SpiSetConfigurationRequest`],
-//!   [`GpioSetConfigurationRequest`], [`I2cFrequency`], [`SpiPhase`], [`SpiPolarity`],
-//!   [`GpioDirection`], [`GpioPull`], [`SpiConfigurationInfo`].
+//!   [`GpioSetConfigurationRequest`], [`UartSetConfigurationRequest`],
+//!   [`I2cFrequency`], [`SpiPhase`], [`SpiPolarity`],
+//!   [`GpioDirection`], [`GpioPull`], [`SpiConfigurationInfo`],
+//!   [`UartConfigurationInfo`].
 //! - **Version**: [`VersionInfo`].
 
 #![cfg_attr(not(feature = "use-std"), no_std)]
@@ -131,6 +136,29 @@ pub type I2cGetConfigurationResponse = I2cFrequency;
 /// Returns the currently active SPI bus parameters.
 pub type SpiGetConfigurationResponse = SpiConfigurationInfo;
 
+/// Response type for UART write operations.
+pub type UartWriteResponse = Result<(), UartError>;
+
+/// Response type for UART read operations.
+/// On the host (`use-std`), returns `Vec<u8>`; on firmware, returns `&[u8]`.
+#[cfg(feature = "use-std")]
+pub type UartReadResponse<'a> = Result<Vec<u8>, UartError>;
+/// Response type for UART read operations.
+/// On the host (`use-std`), returns `Vec<u8>`; on firmware, returns `&[u8]`.
+#[cfg(not(feature = "use-std"))]
+pub type UartReadResponse<'a> = Result<&'a [u8], UartError>;
+
+/// Response type for UART flush operations.
+pub type UartFlushResponse = Result<(), UartError>;
+
+/// Response type for UART bus configuration operations.
+pub type UartSetConfigurationResponse = Result<(), UartConfigError>;
+
+/// Response type for UART get-configuration queries.
+///
+/// Returns the currently active UART parameters.
+pub type UartGetConfigurationResponse = UartConfigurationInfo;
+
 endpoints! {
     list = ENDPOINT_LIST;
     | EndpointTy          | RequestTy                  | ResponseTy                  | Path                |
@@ -156,6 +184,11 @@ endpoints! {
     | GpioSetConfiguration | GpioSetConfigurationRequest | GpioSetConfigurationResponse | "gpio/set-config"   |
     | I2cGetConfiguration  | ()                          | I2cGetConfigurationResponse  | "i2c/get-config"    |
     | SpiGetConfiguration  | ()                          | SpiGetConfigurationResponse  | "spi/get-config"    |
+    | UartRead             | UartReadRequest             | UartReadResponse<'a>         | "uart/read"         |
+    | UartWrite            | UartWriteRequest<'a>        | UartWriteResponse            | "uart/write"        |
+    | UartFlush            | ()                          | UartFlushResponse            | "uart/flush"        |
+    | UartSetConfiguration | UartSetConfigurationRequest | UartSetConfigurationResponse | "uart/set-config"   |
+    | UartGetConfiguration | ()                          | UartGetConfigurationResponse | "uart/get-config"   |
     | Version              | ()                          | VersionInfo                  | "version"           |
 }
 
@@ -515,6 +548,100 @@ pub enum SpiPolarity {
 /// This is a convenience alias — SPI configuration shares the same error
 /// type as other SPI operations.
 pub type SpiConfigError = SpiError;
+
+// --- UART
+
+/// Error from UART operations, propagated from firmware.
+///
+/// # Wire Compatibility
+///
+/// Variants are serialized by **index**. Do **not** reorder or insert
+/// variants in the middle — only append at the end.
+#[derive(Serialize, Deserialize, Schema, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UartError {
+    /// Request exceeds the firmware buffer limit ([`MAX_TRANSFER_SIZE`]).
+    BufferTooLong,
+    /// UART receiver FIFO overrun — data arrived faster than the firmware
+    /// could process it.
+    Overrun,
+    /// A break condition was detected on the UART RX line.
+    Break,
+    /// Parity mismatch between received data and configured parity setting.
+    Parity,
+    /// The received character did not have a valid stop bit.
+    Framing,
+    /// The requested baud rate is invalid (zero or unsupported by hardware).
+    InvalidBaudRate,
+    /// An unspecified error occurred in the firmware.
+    Other,
+}
+
+impl core::fmt::Display for UartError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::BufferTooLong => write!(f, "buffer exceeds firmware limit"),
+            Self::Overrun => write!(f, "UART receiver overrun"),
+            Self::Break => write!(f, "UART break condition"),
+            Self::Parity => write!(f, "UART parity error"),
+            Self::Framing => write!(f, "UART framing error"),
+            Self::InvalidBaudRate => write!(f, "invalid baud rate"),
+            Self::Other => write!(f, "UART error"),
+        }
+    }
+}
+
+/// Request to read bytes from the UART bus.
+///
+/// The firmware reads up to `count` bytes from the UART receive buffer.
+/// If no data is immediately available, the firmware waits up to
+/// `timeout_ms` milliseconds for at least one byte. Returns whatever
+/// bytes are available (1 to `count`), or an empty result on timeout.
+#[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
+pub struct UartReadRequest {
+    /// Maximum number of bytes to read (max [`MAX_TRANSFER_SIZE`]).
+    pub count: u16,
+    /// Maximum time to wait for data, in milliseconds.
+    /// Use 0 for a non-blocking poll (return only already-buffered data).
+    pub timeout_ms: u32,
+}
+
+/// Request to write bytes to the UART bus.
+#[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
+pub struct UartWriteRequest<'a> {
+    /// Bytes to write.
+    pub contents: &'a [u8],
+}
+
+/// Request to reconfigure UART bus parameters.
+///
+/// Takes effect immediately. The firmware applies the new baud rate before
+/// processing the next UART operation.
+///
+/// **Note:** In v1, only `baud_rate` is configurable at runtime. Data bits,
+/// parity, and stop bits are set to 8N1 at boot and cannot be changed
+/// dynamically. These fields are reserved for future use and must be set
+/// to their default values (`Eight`, `None`, `One`).
+#[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
+pub struct UartSetConfigurationRequest {
+    /// UART baud rate in bits per second.
+    pub baud_rate: u32,
+}
+
+/// Error returned when UART configuration fails.
+///
+/// This is a convenience alias — UART configuration shares the same error
+/// type as other UART operations.
+pub type UartConfigError = UartError;
+
+/// Current UART bus configuration as reported by the firmware.
+///
+/// Returned by `uart/get-config`. Reflects the last successfully applied
+/// configuration.
+#[derive(Serialize, Deserialize, Schema, Debug, Clone, PartialEq, Eq)]
+pub struct UartConfigurationInfo {
+    /// UART baud rate in bits per second.
+    pub baud_rate: u32,
+}
 
 /// Current SPI bus configuration as reported by the firmware.
 ///
@@ -1251,5 +1378,151 @@ mod tests {
             let decoded: I2cFrequency = from_bytes(&bytes).unwrap();
             assert_eq!(freq, decoded);
         }
+    }
+
+    // --- UART round-trip tests ---
+
+    #[test]
+    fn uart_read_request_round_trip() {
+        let req = UartReadRequest {
+            count: 64,
+            timeout_ms: 1000,
+        };
+        let bytes = to_allocvec(&req).unwrap();
+        let decoded: UartReadRequest = from_bytes(&bytes).unwrap();
+        assert_eq!(req, decoded);
+    }
+
+    #[test]
+    fn uart_read_request_zero_timeout() {
+        let req = UartReadRequest {
+            count: 10,
+            timeout_ms: 0,
+        };
+        let bytes = to_allocvec(&req).unwrap();
+        let decoded: UartReadRequest = from_bytes(&bytes).unwrap();
+        assert_eq!(req, decoded);
+    }
+
+    #[test]
+    fn uart_read_request_max_count() {
+        let req = UartReadRequest {
+            count: u16::MAX,
+            timeout_ms: 5000,
+        };
+        let bytes = to_allocvec(&req).unwrap();
+        let decoded: UartReadRequest = from_bytes(&bytes).unwrap();
+        assert_eq!(req, decoded);
+    }
+
+    #[test]
+    fn uart_write_request_round_trip() {
+        let data = [0x48, 0x65, 0x6c, 0x6c, 0x6f];
+        let req = UartWriteRequest { contents: &data };
+        let bytes = to_allocvec(&req).unwrap();
+        let decoded: UartWriteRequest = from_bytes(&bytes).unwrap();
+        assert_eq!(req, decoded);
+    }
+
+    #[test]
+    fn uart_write_request_empty_contents() {
+        let req = UartWriteRequest { contents: &[] };
+        let bytes = to_allocvec(&req).unwrap();
+        let decoded: UartWriteRequest = from_bytes(&bytes).unwrap();
+        assert_eq!(req, decoded);
+    }
+
+    #[test]
+    fn uart_set_configuration_request_round_trip() {
+        let req = UartSetConfigurationRequest { baud_rate: 115_200 };
+        let bytes = to_allocvec(&req).unwrap();
+        let decoded: UartSetConfigurationRequest = from_bytes(&bytes).unwrap();
+        assert_eq!(req, decoded);
+    }
+
+    #[test]
+    fn uart_set_configuration_request_common_baud_rates() {
+        for baud in [9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600] {
+            let req = UartSetConfigurationRequest { baud_rate: baud };
+            let bytes = to_allocvec(&req).unwrap();
+            let decoded: UartSetConfigurationRequest = from_bytes(&bytes).unwrap();
+            assert_eq!(req, decoded);
+        }
+    }
+
+    #[test]
+    fn uart_configuration_info_round_trip() {
+        let info = UartConfigurationInfo { baud_rate: 115_200 };
+        let bytes = to_allocvec(&info).unwrap();
+        let decoded: UartConfigurationInfo = from_bytes(&bytes).unwrap();
+        assert_eq!(info, decoded);
+    }
+
+    #[test]
+    fn uart_error_variants_round_trip() {
+        for err in [
+            UartError::BufferTooLong,
+            UartError::Overrun,
+            UartError::Break,
+            UartError::Parity,
+            UartError::Framing,
+            UartError::InvalidBaudRate,
+            UartError::Other,
+        ] {
+            let bytes = to_allocvec(&err).unwrap();
+            let decoded: UartError = from_bytes(&bytes).unwrap();
+            assert_eq!(err, decoded);
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "use-std")]
+    fn uart_error_display() {
+        assert_eq!(
+            format!("{}", UartError::BufferTooLong),
+            "buffer exceeds firmware limit"
+        );
+        assert_eq!(format!("{}", UartError::Overrun), "UART receiver overrun");
+        assert_eq!(format!("{}", UartError::Break), "UART break condition");
+        assert_eq!(format!("{}", UartError::Parity), "UART parity error");
+        assert_eq!(format!("{}", UartError::Framing), "UART framing error");
+        assert_eq!(
+            format!("{}", UartError::InvalidBaudRate),
+            "invalid baud rate"
+        );
+        assert_eq!(format!("{}", UartError::Other), "UART error");
+    }
+
+    #[test]
+    fn uart_read_request_wire_stability() {
+        let req = UartReadRequest {
+            count: 64,
+            timeout_ms: 1000,
+        };
+        let bytes = to_allocvec(&req).unwrap();
+        let canonical = bytes.clone();
+        let decoded: UartReadRequest = from_bytes(&bytes).unwrap();
+        assert_eq!(decoded, req);
+        assert_eq!(to_allocvec(&decoded).unwrap(), canonical);
+    }
+
+    #[test]
+    fn uart_set_configuration_request_wire_stability() {
+        let req = UartSetConfigurationRequest { baud_rate: 115_200 };
+        let bytes = to_allocvec(&req).unwrap();
+        let canonical = bytes.clone();
+        let decoded: UartSetConfigurationRequest = from_bytes(&bytes).unwrap();
+        assert_eq!(decoded, req);
+        assert_eq!(to_allocvec(&decoded).unwrap(), canonical);
+    }
+
+    #[test]
+    fn uart_configuration_info_wire_stability() {
+        let info = UartConfigurationInfo { baud_rate: 115_200 };
+        let bytes = to_allocvec(&info).unwrap();
+        let canonical = bytes.clone();
+        let decoded: UartConfigurationInfo = from_bytes(&bytes).unwrap();
+        assert_eq!(decoded, info);
+        assert_eq!(to_allocvec(&decoded).unwrap(), canonical);
     }
 }

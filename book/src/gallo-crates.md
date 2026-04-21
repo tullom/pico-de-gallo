@@ -7,7 +7,7 @@ crates are discussed below.
 ## Gallo App
 
 The `gallo` app's main purpose is that of one-off, or batch-mode
-communication with *Pico de Gallo*'s I<sup>2</sup>C and SPI buses. The
+communication with *Pico de Gallo*'s I<sup>2</sup>C, SPI, UART, and GPIO buses. The
 built-in help text gives us a little more information.
 
 ```console
@@ -22,6 +22,7 @@ Commands:
   i2c      I2C access methods
   spi      SPI access methods
   gpio     GPIO access methods
+  uart     UART access methods
   help     Print this message or the help of the given subcommand(s)
 
 Options:
@@ -273,6 +274,11 @@ endpoints exposed by the firmware. The table below provides a summary.
 | `i2c_get_config`             |                                                               | Returns the active I<sup>2</sup>C bus configuration (frequency)              |
 | `spi_get_config`             |                                                               | Returns the active SPI bus configuration (frequency, phase, polarity)        |
 | `version`                    |                                                               | Reads the current Firmware version from *Pico de Gallo*                    |
+| `uart_read`                  | `count`, `timeout_ms`                                         | Reads up to `count` bytes from UART with timeout (0 = non-blocking)        |
+| `uart_write`                 | `contents`                                                    | Writes `contents` to the UART transmit buffer                              |
+| `uart_flush`                 |                                                               | Flushes the UART transmit buffer                                           |
+| `uart_set_config`            | `baud_rate`                                                   | Sets the UART baud rate (must be > 0)                                      |
+| `uart_get_config`            |                                                               | Returns the active UART configuration (baud rate)                          |
 
 ## Gallo Hal
 
@@ -294,6 +300,7 @@ examples.
 | GPIO       | `OutputPin`, `InputPin`, `StatefulOutputPin` | `Wait`                |
 | I2C        | `I2c`                                        | `I2c`                 |
 | SPI        | `SpiBus`, `SpiDevice`                        | `SpiBus`, `SpiDevice` |
+| UART       | `embedded_io::Read`, `embedded_io::Write`    | `embedded_io_async::Read`, `embedded_io_async::Write` |
 | Delay      | `DelayNs`                                    | `DelayNs`             |
 
 > **Note:** `SpiDevice` manages chip-select (CS) automatically via a

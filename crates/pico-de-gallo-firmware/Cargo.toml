@@ -23,6 +23,7 @@ embassy-rp = { version = "0.10.0", features = ["defmt", "unstable-pac", "time-dr
 embassy-sync = { version = "0.7.2", features = ["defmt"] }
 embassy-time = { version = "0.5", features = ["defmt", "defmt-timestamp-uptime"] }
 embassy-usb = { version = "0.5", features = ["defmt"] }
+embedded-io-async = "0.7.0"
 heapless = "0.9.2"
 panic-probe = "1.0.0"
 pico-de-gallo-internal = { version = "0.3.1", path = "../pico-de-gallo-internal" }

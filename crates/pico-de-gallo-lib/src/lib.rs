@@ -2,8 +2,9 @@
 //!
 //! This crate provides [`PicoDeGallo`], an async client for interacting with
 //! the Pico de Gallo firmware over USB. It supports I2C reads/writes, SPI
-//! operations (including full-duplex transfers), GPIO control, and device
-//! configuration — all via [postcard-rpc](https://docs.rs/postcard-rpc) endpoints.
+//! operations (including full-duplex transfers), UART reads/writes, GPIO
+//! control, and device configuration — all via
+//! [postcard-rpc](https://docs.rs/postcard-rpc) endpoints.
 //!
 //! # Quick Start
 //!
@@ -50,13 +51,16 @@ use pico_de_gallo_internal::{
     I2cGetConfiguration, I2cRead, I2cReadRequest, I2cScan, I2cScanRequest, I2cSetConfiguration,
     I2cSetConfigurationRequest, I2cWrite, I2cWriteRead, I2cWriteReadRequest, I2cWriteRequest, MICROSOFT_VID,
     PICO_DE_GALLO_PID, SpiFlush, SpiGetConfiguration, SpiRead, SpiReadRequest, SpiSetConfiguration,
-    SpiSetConfigurationRequest, SpiTransfer, SpiTransferRequest, SpiWrite, SpiWriteRequest, Version,
+    SpiSetConfigurationRequest, SpiTransfer, SpiTransferRequest, SpiWrite, SpiWriteRequest, UartFlush,
+    UartGetConfiguration, UartRead, UartReadRequest, UartSetConfiguration, UartSetConfigurationRequest, UartWrite,
+    UartWriteRequest, Version,
 };
 
 pub use pico_de_gallo_internal::{
-    GpioDirection, GpioPull, GpioState, I2cFrequency, SpiConfigurationInfo, SpiPhase, SpiPolarity, VersionInfo,
+    GpioDirection, GpioPull, GpioState, I2cFrequency, SpiConfigurationInfo, SpiPhase, SpiPolarity,
+    UartConfigurationInfo, VersionInfo,
 };
-pub use pico_de_gallo_internal::{GpioError, I2cError, SpiError};
+pub use pico_de_gallo_internal::{GpioError, I2cError, SpiError, UartError};
 
 use postcard_rpc::{
     header::VarSeqKind,
@@ -280,6 +284,45 @@ impl PicoDeGallo {
             .map_err(PicoDeGalloError::Endpoint)
     }
 
+    /// Read up to `count` bytes from the UART bus.
+    ///
+    /// The firmware reads up to `count` bytes from the UART receive buffer.
+    /// If no data is immediately available, it waits up to `timeout_ms`
+    /// milliseconds for at least one byte. Returns whatever bytes are
+    /// available (1 to `count`), or an empty `Vec` on timeout.
+    ///
+    /// The firmware buffer is limited to [`pico_de_gallo_internal::MAX_TRANSFER_SIZE`]
+    /// (4096) bytes.
+    pub async fn uart_read(&self, count: u16, timeout_ms: u32) -> Result<Vec<u8>, PicoDeGalloError<UartError>> {
+        self.client
+            .send_resp::<UartRead>(&UartReadRequest { count, timeout_ms })
+            .await?
+            .map_err(PicoDeGalloError::Endpoint)
+    }
+
+    /// Write `contents` to the UART bus.
+    ///
+    /// Bytes are queued to the firmware's UART transmit buffer. The call
+    /// returns once all bytes have been accepted by the TX buffer (not
+    /// necessarily transmitted on the wire). Use [`uart_flush`](Self::uart_flush)
+    /// to wait for transmission to complete.
+    pub async fn uart_write(&self, contents: &[u8]) -> Result<(), PicoDeGalloError<UartError>> {
+        self.client
+            .send_resp::<UartWrite>(&UartWriteRequest { contents })
+            .await?
+            .map_err(PicoDeGalloError::Endpoint)
+    }
+
+    /// Flush the UART transmit buffer.
+    ///
+    /// Blocks until all pending bytes have been transmitted on the wire.
+    pub async fn uart_flush(&self) -> Result<(), PicoDeGalloError<UartError>> {
+        self.client
+            .send_resp::<UartFlush>(&())
+            .await?
+            .map_err(PicoDeGalloError::Endpoint)
+    }
+
     /// Get the current state of GPIO numbered by `pin`.
     ///
     /// Pico de Gallo offers 8 total GPIOs, numbered 0 through 7.
@@ -422,6 +465,25 @@ impl PicoDeGallo {
     /// `CaptureOnFirstTransition`, and `IdleLow`.
     pub async fn spi_get_config(&self) -> Result<SpiConfigurationInfo, PicoDeGalloError<Infallible>> {
         Ok(self.client.send_resp::<SpiGetConfiguration>(&()).await?)
+    }
+
+    /// Set UART bus configuration parameters.
+    ///
+    /// Changes the UART baud rate. Takes effect immediately before the next
+    /// UART operation. The default baud rate is 115200.
+    pub async fn uart_set_config(&self, baud_rate: u32) -> Result<(), PicoDeGalloError<UartError>> {
+        self.client
+            .send_resp::<UartSetConfiguration>(&UartSetConfigurationRequest { baud_rate })
+            .await?
+            .map_err(PicoDeGalloError::Endpoint)
+    }
+
+    /// Query the current UART bus configuration.
+    ///
+    /// Returns a [`UartConfigurationInfo`] struct with the active baud rate.
+    /// The default is 115200.
+    pub async fn uart_get_config(&self) -> Result<UartConfigurationInfo, PicoDeGalloError<Infallible>> {
+        Ok(self.client.send_resp::<UartGetConfiguration>(&()).await?)
     }
 }
 

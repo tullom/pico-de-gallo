@@ -2,7 +2,7 @@
 #![no_main]
 //! Pico de Gallo firmware for the Raspberry Pi Pico 2 (RP2350).
 //!
-//! This firmware implements a USB bridge that exposes I2C, SPI, and GPIO
+//! This firmware implements a USB bridge that exposes I2C, SPI, UART, and GPIO
 //! peripherals to a host computer via [postcard-rpc](https://docs.rs/postcard-rpc)
 //! endpoints. It runs on the [Embassy](https://embassy.dev) async runtime.
 //!
@@ -10,6 +10,8 @@
 //!
 //! | Function | RP2350 Pins | Notes |
 //! |----------|-------------|-------|
+//! | UART0 TX | GPIO 0 | Buffered, interrupt-driven |
+//! | UART0 RX | GPIO 1 | |
 //! | I2C1 SDA | GPIO 2 | 7-bit addressing, async mode |
 //! | I2C1 SCL | GPIO 3 | |
 //! | SPI0 SCK | GPIO 6 | DMA-backed full-duplex |
@@ -35,6 +37,7 @@ use embassy_executor::Spawner;
 use embassy_rp::bind_interrupts;
 use embassy_rp::clocks::ClockConfig;
 use embassy_rp::gpio::{Flex, Level, Pull};
+use embassy_time::{Duration, with_timeout};
 
 /// Per-pin direction mode tracked by firmware.
 ///
@@ -52,9 +55,11 @@ enum PinMode {
     ExplicitOutput,
 }
 use embassy_rp::i2c::{self, I2c};
-use embassy_rp::peripherals::{DMA_CH0, DMA_CH1, I2C1, SPI0, USB};
+use embassy_rp::peripherals::{DMA_CH0, DMA_CH1, I2C1, SPI0, UART0, USB};
 use embassy_rp::spi::{self, Phase, Polarity, Spi};
+use embassy_rp::uart::{self, BufferedUart};
 use embassy_rp::usb::Driver;
+use embedded_io_async::{Read as AsyncRead, Write as AsyncWrite};
 // Direct embassy-sync dep required: postcard-rpc's WireStorage is generic over
 // embassy_sync_0_7::blocking_mutex::raw::RawMutex, which is the same type as
 // embassy-sync 0.7's RawMutex (they share the same crate version).
@@ -71,7 +76,10 @@ use pico_de_gallo_internal::{
     PingEndpoint, SpiConfigurationInfo, SpiError, SpiFlush, SpiFlushResponse, SpiGetConfiguration,
     SpiGetConfigurationResponse, SpiPhase, SpiPolarity, SpiRead, SpiReadRequest, SpiReadResponse, SpiSetConfiguration,
     SpiSetConfigurationRequest, SpiSetConfigurationResponse, SpiTransfer, SpiTransferRequest, SpiTransferResponse,
-    SpiWrite, SpiWriteRequest, SpiWriteResponse, TOPICS_IN_LIST, TOPICS_OUT_LIST, Version, VersionInfo,
+    SpiWrite, SpiWriteRequest, SpiWriteResponse, TOPICS_IN_LIST, TOPICS_OUT_LIST, UartConfigurationInfo, UartError,
+    UartFlush, UartFlushResponse, UartGetConfiguration, UartGetConfigurationResponse, UartRead, UartReadRequest,
+    UartReadResponse, UartSetConfiguration, UartSetConfigurationRequest, UartSetConfigurationResponse, UartWrite,
+    UartWriteRequest, UartWriteResponse, Version, VersionInfo,
 };
 use postcard_rpc::{
     define_dispatch,
@@ -109,6 +117,7 @@ bind_interrupts!(struct Irqs {
     USBCTRL_IRQ => embassy_rp::usb::InterruptHandler<USB>;
     I2C1_IRQ => embassy_rp::i2c::InterruptHandler<I2C1>;
     DMA_IRQ_0 => embassy_rp::dma::InterruptHandler<DMA_CH0>, embassy_rp::dma::InterruptHandler<DMA_CH1>;
+    UART0_IRQ => embassy_rp::uart::BufferedInterruptHandler<UART0>;
 });
 
 const NUM_GPIOS: usize = 8;
@@ -121,12 +130,14 @@ const NUM_GPIOS: usize = 8;
 pub struct Context {
     i2c: I2c<'static, I2C1, i2c::Async>,
     spi: Spi<'static, SPI0, spi::Async>,
+    uart: BufferedUart,
     gpios: [Flex<'static>; NUM_GPIOS],
     pin_modes: [PinMode; NUM_GPIOS],
     i2c_frequency: I2cFrequency,
     spi_frequency: u32,
     spi_phase: SpiPhase,
     spi_polarity: SpiPolarity,
+    uart_baud_rate: u32,
     buf: [u8; MAX_TRANSFER_SIZE],
 }
 
@@ -134,18 +145,21 @@ impl Context {
     fn new(
         i2c: I2c<'static, I2C1, i2c::Async>,
         spi: Spi<'static, SPI0, spi::Async>,
+        uart: BufferedUart,
         gpios: [Flex<'static>; NUM_GPIOS],
     ) -> Self {
         // Defaults match embassy-rp Config::default()
         Self {
             i2c,
             spi,
+            uart,
             gpios,
             pin_modes: [PinMode::LegacyAuto; NUM_GPIOS],
             i2c_frequency: I2cFrequency::Standard,
             spi_frequency: 1_000_000,
             spi_phase: SpiPhase::CaptureOnFirstTransition,
             spi_polarity: SpiPolarity::IdleLow,
+            uart_baud_rate: 115_200,
             buf: [0; MAX_TRANSFER_SIZE],
         }
     }
@@ -280,6 +294,11 @@ define_dispatch! {
         | SpiSetConfiguration  | async    | spi_set_config_handler        |
         | I2cGetConfiguration  | blocking | i2c_get_config_handler        |
         | SpiGetConfiguration  | blocking | spi_get_config_handler        |
+        | UartRead             | async    | uart_read_handler             |
+        | UartWrite            | async    | uart_write_handler            |
+        | UartFlush            | async    | uart_flush_handler            |
+        | UartSetConfiguration | async    | uart_set_config_handler       |
+        | UartGetConfiguration | blocking | uart_get_config_handler       |
         | Version             | async    | version_handler               |
     };
     topics_in: {
@@ -326,7 +345,22 @@ async fn main(spawner: Spawner) {
         Flex::new(p.PIN_15),
     ];
 
-    let context = Context::new(i2c, spi, gpios);
+    // UART0 on GPIO0 (TX) and GPIO1 (RX) — default Pico 2 header pins
+    static UART_TX_BUF: StaticCell<[u8; 1024]> = StaticCell::new();
+    static UART_RX_BUF: StaticCell<[u8; 1024]> = StaticCell::new();
+    let uart_tx_buf = UART_TX_BUF.init([0u8; 1024]);
+    let uart_rx_buf = UART_RX_BUF.init([0u8; 1024]);
+    let uart = BufferedUart::new(
+        p.UART0,
+        p.PIN_0,
+        p.PIN_1,
+        Irqs,
+        uart_tx_buf,
+        uart_rx_buf,
+        uart::Config::default(),
+    );
+
+    let context = Context::new(i2c, spi, uart, gpios);
 
     let (device, tx_impl, rx_impl) = STORAGE.init(
         driver,
@@ -715,6 +749,85 @@ fn spi_get_config_handler(context: &mut Context, _header: VarHeader, _req: ()) -
         spi_frequency: context.spi_frequency,
         spi_phase: context.spi_phase,
         spi_polarity: context.spi_polarity,
+    }
+}
+
+// --- UART Handlers ---
+
+/// Handler for `uart/read` — reads bytes from the UART receive buffer.
+///
+/// Reads up to `count` bytes with a timeout. Returns whatever bytes are
+/// available (1 to count), or an empty slice on timeout.
+async fn uart_read_handler<'a>(
+    context: &'a mut Context,
+    _header: VarHeader,
+    req: UartReadRequest,
+) -> UartReadResponse<'a> {
+    let count = (req.count as usize).min(MAX_TRANSFER_SIZE);
+    if count == 0 {
+        return Ok(&[]);
+    }
+
+    let buf = &mut context.buf[..count];
+
+    if req.timeout_ms == 0 {
+        // Non-blocking: try to read whatever is buffered
+        match with_timeout(Duration::from_millis(1), AsyncRead::read(&mut context.uart, buf)).await {
+            Ok(Ok(n)) => Ok(&context.buf[..n]),
+            Ok(Err(_)) => Err(UartError::Other),
+            Err(_) => Ok(&[]),
+        }
+    } else {
+        match with_timeout(
+            Duration::from_millis(req.timeout_ms as u64),
+            AsyncRead::read(&mut context.uart, buf),
+        )
+        .await
+        {
+            Ok(Ok(n)) => Ok(&context.buf[..n]),
+            Ok(Err(_)) => Err(UartError::Other),
+            Err(_) => Ok(&[]),
+        }
+    }
+}
+
+/// Handler for `uart/write` — writes bytes to the UART transmit buffer.
+async fn uart_write_handler(context: &mut Context, _header: VarHeader, req: UartWriteRequest<'_>) -> UartWriteResponse {
+    if req.contents.len() > MAX_TRANSFER_SIZE {
+        return Err(UartError::BufferTooLong);
+    }
+
+    AsyncWrite::write_all(&mut context.uart, req.contents)
+        .await
+        .map_err(|_| UartError::Other)
+}
+
+/// Handler for `uart/flush` — flushes the UART transmit buffer.
+async fn uart_flush_handler(context: &mut Context, _header: VarHeader, _req: ()) -> UartFlushResponse {
+    AsyncWrite::flush(&mut context.uart).await.map_err(|_| UartError::Other)
+}
+
+/// Handler for `uart/set-config` — changes the UART baud rate.
+async fn uart_set_config_handler(
+    context: &mut Context,
+    _header: VarHeader,
+    req: UartSetConfigurationRequest,
+) -> UartSetConfigurationResponse {
+    if req.baud_rate == 0 {
+        warn!("uart_set_config: baud_rate must be non-zero");
+        return Err(UartError::InvalidBaudRate);
+    }
+
+    debug!("uart_set_config: baud_rate={=u32}", req.baud_rate);
+    context.uart.set_baudrate(req.baud_rate);
+    context.uart_baud_rate = req.baud_rate;
+    Ok(())
+}
+
+/// Handler for `uart/get-config` — returns the current UART configuration.
+fn uart_get_config_handler(context: &mut Context, _header: VarHeader, _req: ()) -> UartGetConfigurationResponse {
+    UartConfigurationInfo {
+        baud_rate: context.uart_baud_rate,
     }
 }
 

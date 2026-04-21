@@ -36,7 +36,7 @@
 //! negative values indicate errors. See [`Status`] for the full list.
 
 use futures::executor::block_on;
-use pico_de_gallo_lib::{self as lib, GpioError, I2cError, PicoDeGalloError, SpiError};
+use pico_de_gallo_lib::{self as lib, GpioError, I2cError, PicoDeGalloError, SpiError, UartError};
 use std::ffi::CStr;
 use std::os::raw::c_char;
 
@@ -127,6 +127,26 @@ pub enum Status {
     I2cGetConfigFailed = -29,
     /// SPI get-config query failed
     SpiGetConfigFailed = -30,
+    /// UART read failed
+    UartReadFailed = -31,
+    /// UART write failed
+    UartWriteFailed = -32,
+    /// UART flush failed
+    UartFlushFailed = -33,
+    /// UART receiver overrun
+    UartOverrun = -34,
+    /// UART break condition detected
+    UartBreak = -35,
+    /// UART parity error
+    UartParity = -36,
+    /// UART framing error
+    UartFraming = -37,
+    /// Invalid baud rate
+    UartInvalidBaudRate = -38,
+    /// UART set-config failed
+    UartSetConfigFailed = -39,
+    /// UART get-config query failed
+    UartGetConfigFailed = -40,
 }
 
 // ----------------------------- Error Mapping Helpers -----------------------------
@@ -157,6 +177,19 @@ fn gpio_error_to_status(e: PicoDeGalloError<GpioError>) -> Status {
         PicoDeGalloError::Endpoint(GpioError::InvalidPin) => Status::GpioInvalidPin,
         PicoDeGalloError::Endpoint(GpioError::WrongDirection) => Status::GpioWrongDirection,
         PicoDeGalloError::Endpoint(GpioError::Other) => Status::GpioGetFailed,
+        PicoDeGalloError::Comms(_) => Status::CommsFailed,
+    }
+}
+
+fn uart_error_to_status(e: PicoDeGalloError<UartError>) -> Status {
+    match e {
+        PicoDeGalloError::Endpoint(UartError::BufferTooLong) => Status::BufferTooLong,
+        PicoDeGalloError::Endpoint(UartError::Overrun) => Status::UartOverrun,
+        PicoDeGalloError::Endpoint(UartError::Break) => Status::UartBreak,
+        PicoDeGalloError::Endpoint(UartError::Parity) => Status::UartParity,
+        PicoDeGalloError::Endpoint(UartError::Framing) => Status::UartFraming,
+        PicoDeGalloError::Endpoint(UartError::InvalidBaudRate) => Status::UartInvalidBaudRate,
+        PicoDeGalloError::Endpoint(UartError::Other) => Status::UartReadFailed,
         PicoDeGalloError::Comms(_) => Status::CommsFailed,
     }
 }
@@ -1078,6 +1111,217 @@ pub unsafe extern "C" fn gallo_spi_get_config(
     }
 }
 
+// ----------------------------- UART Read endpoint -----------------------------
+
+/// gallo_uart_read - Read bytes from the UART bus.
+///
+/// Reads up to `count` bytes into `buf`. On success, writes the actual
+/// number of bytes read to `*out_len`. If no data arrives within
+/// `timeout_ms` milliseconds, sets `*out_len = 0` and returns
+/// `Status::Ok`.
+///
+/// Returns `Status::Ok` in case of success or various error codes.
+///
+/// # Safety
+///
+/// Caller must ensure that `gallo` is a valid, opaque pointer to
+/// `PicoDeGallo` returned by `gallo_init()`, that `buf` points to at
+/// least `count` bytes, and `out_len` is a valid pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gallo_uart_read(
+    gallo: *mut PicoDeGallo,
+    buf: *mut u8,
+    count: u16,
+    timeout_ms: u32,
+    out_len: *mut u16,
+) -> Status {
+    if gallo.is_null() {
+        eprintln!("Unexpected NULL context");
+        return Status::Uninitialized;
+    }
+
+    if buf.is_null() || out_len.is_null() {
+        eprintln!("Unexpected NULL pointer");
+        return Status::InvalidArgument;
+    }
+
+    // Safety: caller must ensure that `gallo` is a valid opaque
+    // pointer to `PicoDeGallo` returned by `gallo_init()`.
+    let gallo = unsafe { &*gallo };
+
+    let result = block_on(gallo.0.uart_read(count, timeout_ms));
+
+    match result {
+        Ok(data) => {
+            let len = data.len().min(count as usize);
+            unsafe {
+                std::ptr::copy_nonoverlapping(data.as_ptr(), buf, len);
+                *out_len = len as u16;
+            }
+            Status::Ok
+        }
+        Err(e) => uart_error_to_status(e),
+    }
+}
+
+// ----------------------------- UART Write endpoint -----------------------------
+
+/// gallo_uart_write - Write bytes to the UART bus.
+///
+/// Queues `len` bytes from `buf` to the UART transmit buffer. Returns
+/// once all bytes have been accepted. Use [`gallo_uart_flush`] to wait
+/// for transmission to complete on the wire.
+///
+/// Returns `Status::Ok` in case of success or various error codes.
+///
+/// # Safety
+///
+/// Caller must ensure that `gallo` is a valid, opaque pointer to
+/// `PicoDeGallo` returned by `gallo_init()`, and that `buf` points to
+/// at least `len` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gallo_uart_write(
+    gallo: *mut PicoDeGallo,
+    buf: *const u8,
+    len: u16,
+) -> Status {
+    if gallo.is_null() {
+        eprintln!("Unexpected NULL context");
+        return Status::Uninitialized;
+    }
+
+    if buf.is_null() {
+        eprintln!("Unexpected NULL buf pointer");
+        return Status::InvalidArgument;
+    }
+
+    // Safety: caller must ensure that `gallo` is a valid opaque
+    // pointer to `PicoDeGallo` returned by `gallo_init()`.
+    let gallo = unsafe { &*gallo };
+
+    let data = unsafe { std::slice::from_raw_parts(buf, len as usize) };
+
+    let result = block_on(gallo.0.uart_write(data));
+
+    match result {
+        Ok(()) => Status::Ok,
+        Err(e) => uart_error_to_status(e),
+    }
+}
+
+// ----------------------------- UART Flush endpoint -----------------------------
+
+/// gallo_uart_flush - Flush the UART transmit buffer.
+///
+/// Blocks until all pending bytes have been transmitted on the wire.
+///
+/// Returns `Status::Ok` in case of success or various error codes.
+///
+/// # Safety
+///
+/// Caller must ensure that `gallo` is a valid, opaque pointer to
+/// `PicoDeGallo` returned by `gallo_init()`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gallo_uart_flush(gallo: *mut PicoDeGallo) -> Status {
+    if gallo.is_null() {
+        eprintln!("Unexpected NULL context");
+        return Status::Uninitialized;
+    }
+
+    // Safety: caller must ensure that `gallo` is a valid opaque
+    // pointer to `PicoDeGallo` returned by `gallo_init()`.
+    let gallo = unsafe { &*gallo };
+
+    let result = block_on(gallo.0.uart_flush());
+
+    match result {
+        Ok(()) => Status::Ok,
+        Err(e) => uart_error_to_status(e),
+    }
+}
+
+// ----------------------------- UART Set config endpoint -----------------------------
+
+/// gallo_uart_set_config - Set the UART baud rate.
+///
+/// `baud_rate` must be greater than 0. Returns `Status::InvalidArgument`
+/// for a zero baud rate.
+///
+/// Returns `Status::Ok` in case of success or various error codes.
+///
+/// # Safety
+///
+/// Caller must ensure that `gallo` is a valid, opaque pointer to
+/// `PicoDeGallo` returned by `gallo_init()`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gallo_uart_set_config(gallo: *mut PicoDeGallo, baud_rate: u32) -> Status {
+    if gallo.is_null() {
+        eprintln!("Unexpected NULL context");
+        return Status::Uninitialized;
+    }
+
+    if baud_rate == 0 {
+        eprintln!("Invalid baud rate: 0");
+        return Status::InvalidArgument;
+    }
+
+    // Safety: caller must ensure that `gallo` is a valid opaque
+    // pointer to `PicoDeGallo` returned by `gallo_init()`.
+    let gallo = unsafe { &*gallo };
+
+    let result = block_on(gallo.0.uart_set_config(baud_rate));
+
+    match result {
+        Ok(()) => Status::Ok,
+        Err(e) => uart_error_to_status(e),
+    }
+}
+
+// ----------------------------- UART Get config endpoint -----------------------------
+
+/// gallo_uart_get_config - Query the current UART configuration.
+///
+/// On success, writes the current baud rate to `*out_baud_rate`.
+///
+/// Returns `Status::Ok` in case of success or various error codes.
+///
+/// # Safety
+///
+/// Caller must ensure that `gallo` is a valid, opaque pointer to
+/// `PicoDeGallo` returned by `gallo_init()`, and that `out_baud_rate`
+/// is a valid pointer to a `u32`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gallo_uart_get_config(
+    gallo: *mut PicoDeGallo,
+    out_baud_rate: *mut u32,
+) -> Status {
+    if gallo.is_null() {
+        eprintln!("Unexpected NULL context");
+        return Status::Uninitialized;
+    }
+
+    if out_baud_rate.is_null() {
+        eprintln!("Unexpected NULL out_baud_rate pointer");
+        return Status::InvalidArgument;
+    }
+
+    // Safety: caller must ensure that `gallo` is a valid opaque
+    // pointer to `PicoDeGallo` returned by `gallo_init()`.
+    let gallo = unsafe { &*gallo };
+
+    let result = block_on(gallo.0.uart_get_config());
+
+    match result {
+        Ok(info) => {
+            unsafe {
+                *out_baud_rate = info.baud_rate;
+            }
+            Status::Ok
+        }
+        Err(_) => Status::UartGetConfigFailed,
+    }
+}
+
 // ----------------------------- Version endpoint -----------------------------
 
 #[unsafe(no_mangle)]
@@ -1174,6 +1418,16 @@ mod tests {
             Status::GpioWrongDirection as i32,
             Status::I2cGetConfigFailed as i32,
             Status::SpiGetConfigFailed as i32,
+            Status::UartReadFailed as i32,
+            Status::UartWriteFailed as i32,
+            Status::UartFlushFailed as i32,
+            Status::UartOverrun as i32,
+            Status::UartBreak as i32,
+            Status::UartParity as i32,
+            Status::UartFraming as i32,
+            Status::UartInvalidBaudRate as i32,
+            Status::UartSetConfigFailed as i32,
+            Status::UartGetConfigFailed as i32,
         ];
         for code in error_codes {
             assert!(code < 0, "error code {code} should be negative");
@@ -1214,6 +1468,16 @@ mod tests {
             Status::GpioWrongDirection as i32,
             Status::I2cGetConfigFailed as i32,
             Status::SpiGetConfigFailed as i32,
+            Status::UartReadFailed as i32,
+            Status::UartWriteFailed as i32,
+            Status::UartFlushFailed as i32,
+            Status::UartOverrun as i32,
+            Status::UartBreak as i32,
+            Status::UartParity as i32,
+            Status::UartFraming as i32,
+            Status::UartInvalidBaudRate as i32,
+            Status::UartSetConfigFailed as i32,
+            Status::UartGetConfigFailed as i32,
         ];
         let unique: HashSet<i32> = codes.iter().copied().collect();
         assert_eq!(codes.len(), unique.len(), "duplicate status codes found");
@@ -1450,5 +1714,108 @@ mod tests {
     fn init_with_null_serial_returns_null() {
         let ptr = unsafe { gallo_init_with_serial_number(std::ptr::null()) };
         assert!(ptr.is_null());
+    }
+
+    // ----------------------------- UART null pointer checks -----------------------------
+
+    #[test]
+    fn uart_read_null_device_returns_uninitialized() {
+        let mut buf = [0u8; 4];
+        let mut out_len = 0u16;
+        let status = unsafe {
+            gallo_uart_read(
+                std::ptr::null_mut(),
+                buf.as_mut_ptr(),
+                4,
+                1000,
+                &mut out_len as *mut u16,
+            )
+        };
+        assert_eq!(status, Status::Uninitialized);
+    }
+
+    #[test]
+    fn uart_read_null_buf_returns_uninitialized() {
+        let status = unsafe {
+            gallo_uart_read(
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                4,
+                1000,
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(status, Status::Uninitialized);
+    }
+
+    #[test]
+    fn uart_write_null_device_returns_uninitialized() {
+        let data = [0x48, 0x65, 0x6c, 0x6c, 0x6f];
+        let status = unsafe { gallo_uart_write(std::ptr::null_mut(), data.as_ptr(), 5) };
+        assert_eq!(status, Status::Uninitialized);
+    }
+
+    #[test]
+    fn uart_write_null_buf_returns_uninitialized() {
+        let status = unsafe { gallo_uart_write(std::ptr::null_mut(), std::ptr::null(), 5) };
+        assert_eq!(status, Status::Uninitialized);
+    }
+
+    #[test]
+    fn uart_flush_null_device_returns_uninitialized() {
+        let status = unsafe { gallo_uart_flush(std::ptr::null_mut()) };
+        assert_eq!(status, Status::Uninitialized);
+    }
+
+    #[test]
+    fn uart_set_config_null_device_returns_uninitialized() {
+        let status = unsafe { gallo_uart_set_config(std::ptr::null_mut(), 115200) };
+        assert_eq!(status, Status::Uninitialized);
+    }
+
+    #[test]
+    fn uart_set_config_zero_baud_returns_uninitialized() {
+        // null check fires first
+        let status = unsafe { gallo_uart_set_config(std::ptr::null_mut(), 0) };
+        assert_eq!(status, Status::Uninitialized);
+    }
+
+    #[test]
+    fn uart_get_config_null_device_returns_uninitialized() {
+        let mut baud = 0u32;
+        let status = unsafe { gallo_uart_get_config(std::ptr::null_mut(), &mut baud as *mut u32) };
+        assert_eq!(status, Status::Uninitialized);
+    }
+
+    #[test]
+    fn uart_error_to_status_maps_all_variants() {
+        assert_eq!(
+            uart_error_to_status(PicoDeGalloError::Endpoint(UartError::BufferTooLong)),
+            Status::BufferTooLong
+        );
+        assert_eq!(
+            uart_error_to_status(PicoDeGalloError::Endpoint(UartError::Overrun)),
+            Status::UartOverrun
+        );
+        assert_eq!(
+            uart_error_to_status(PicoDeGalloError::Endpoint(UartError::Break)),
+            Status::UartBreak
+        );
+        assert_eq!(
+            uart_error_to_status(PicoDeGalloError::Endpoint(UartError::Parity)),
+            Status::UartParity
+        );
+        assert_eq!(
+            uart_error_to_status(PicoDeGalloError::Endpoint(UartError::Framing)),
+            Status::UartFraming
+        );
+        assert_eq!(
+            uart_error_to_status(PicoDeGalloError::Endpoint(UartError::InvalidBaudRate)),
+            Status::UartInvalidBaudRate
+        );
+        assert_eq!(
+            uart_error_to_status(PicoDeGalloError::Endpoint(UartError::Other)),
+            Status::UartReadFailed
+        );
     }
 }
