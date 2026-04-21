@@ -194,7 +194,7 @@ endpoint families.*
 |---|--------------------------------------------------------|----------|
 | ☑ | [2.1 UART Support](#21-uart-support)                   | [#7](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/7) |
 | ☑ | [2.2 PWM Support](#22-pwm-support)                     | [#8](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/8) |
-| ☐ | [2.3 ADC Support](#23-adc-support)                     | [#9](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/9) |
+| ☑ | [2.3 ADC Support](#23-adc-support)                     | [#9](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/9) |
 | ☐ | [2.4 Second I2C Bus](#24-second-i2c-bus)               | [#10](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/10) |
 | ☐ | [2.5 Second SPI Bus](#25-second-spi-bus)               | [#11](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/11) |
 | ☐ | [2.6 10-Bit I2C Addressing](#26-10-bit-i2c-addressing) | [#12](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/12) |

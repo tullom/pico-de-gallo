@@ -37,7 +37,8 @@
 
 use futures::executor::block_on;
 use pico_de_gallo_lib::{
-    self as lib, GpioError, I2cError, PicoDeGalloError, PwmError, SpiError, UartError,
+    self as lib, AdcChannel, AdcError, GpioError, I2cError, PicoDeGalloError, PwmError, SpiError,
+    UartError,
 };
 use std::ffi::CStr;
 use std::os::raw::c_char;
@@ -167,6 +168,14 @@ pub enum Status {
     PwmInvalidDutyCycle = -48,
     /// Invalid PWM configuration
     PwmInvalidConfiguration = -49,
+    /// ADC read failed
+    AdcReadFailed = -50,
+    /// ADC read-temperature failed
+    AdcReadTemperatureFailed = -51,
+    /// ADC get-config query failed
+    AdcGetConfigFailed = -52,
+    /// ADC conversion error
+    AdcConversionFailed = -53,
 }
 
 // ----------------------------- Error Mapping Helpers -----------------------------
@@ -222,6 +231,14 @@ fn pwm_error_to_status(e: PicoDeGalloError<PwmError>) -> Status {
             Status::PwmInvalidConfiguration
         }
         PicoDeGalloError::Endpoint(PwmError::Other) => Status::PwmSetDutyCycleFailed,
+        PicoDeGalloError::Comms(_) => Status::CommsFailed,
+    }
+}
+
+fn adc_error_to_status(e: PicoDeGalloError<AdcError>) -> Status {
+    match e {
+        PicoDeGalloError::Endpoint(AdcError::ConversionFailed) => Status::AdcConversionFailed,
+        PicoDeGalloError::Endpoint(AdcError::Other) => Status::AdcReadFailed,
         PicoDeGalloError::Comms(_) => Status::CommsFailed,
     }
 }
@@ -1538,6 +1555,142 @@ pub unsafe extern "C" fn gallo_pwm_get_config(
     }
 }
 
+// ----------------------------- ADC endpoints -----------------------------
+
+/// gallo_adc_read - Perform a single-shot ADC read.
+///
+/// On success, writes the raw 12-bit value (0–4095) to `*out_value`.
+/// `channel` selects the input: 0–3 for GPIO26–29, 4 for the internal
+/// temperature sensor.
+///
+/// # Safety
+///
+/// Caller must ensure that `gallo` is a valid, opaque pointer to
+/// `PicoDeGallo` returned by `gallo_init()`, and that `out_value` is a
+/// valid pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gallo_adc_read(
+    gallo: *mut PicoDeGallo,
+    channel: u8,
+    out_value: *mut u16,
+) -> Status {
+    if gallo.is_null() {
+        eprintln!("Unexpected NULL context");
+        return Status::Uninitialized;
+    }
+
+    if out_value.is_null() {
+        eprintln!("Unexpected NULL output pointer");
+        return Status::InvalidArgument;
+    }
+
+    let adc_channel = match channel {
+        0 => AdcChannel::Adc0,
+        1 => AdcChannel::Adc1,
+        2 => AdcChannel::Adc2,
+        3 => AdcChannel::Adc3,
+        4 => AdcChannel::TempSensor,
+        _ => {
+            eprintln!("Invalid ADC channel: {channel}");
+            return Status::InvalidArgument;
+        }
+    };
+
+    let gallo = unsafe { &*gallo };
+    match block_on(gallo.0.adc_read(adc_channel)) {
+        Ok(raw) => {
+            unsafe { *out_value = raw };
+            Status::Ok
+        }
+        Err(e) => adc_error_to_status(e),
+    }
+}
+
+/// gallo_adc_read_temperature - Read the on-die temperature sensor.
+///
+/// On success, writes the temperature in millidegrees Celsius to
+/// `*out_millidegrees` (e.g., 27000 = 27.000 °C). The value is approximate.
+///
+/// # Safety
+///
+/// Caller must ensure that `gallo` is a valid, opaque pointer to
+/// `PicoDeGallo` returned by `gallo_init()`, and that `out_millidegrees`
+/// is a valid pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gallo_adc_read_temperature(
+    gallo: *mut PicoDeGallo,
+    out_millidegrees: *mut i32,
+) -> Status {
+    if gallo.is_null() {
+        eprintln!("Unexpected NULL context");
+        return Status::Uninitialized;
+    }
+
+    if out_millidegrees.is_null() {
+        eprintln!("Unexpected NULL output pointer");
+        return Status::InvalidArgument;
+    }
+
+    let gallo = unsafe { &*gallo };
+    match block_on(gallo.0.adc_read_temperature()) {
+        Ok(temp) => {
+            unsafe { *out_millidegrees = temp };
+            Status::Ok
+        }
+        Err(e) => adc_error_to_status(e),
+    }
+}
+
+/// gallo_adc_get_config - Query the ADC configuration.
+///
+/// On success, writes resolution (bits), nominal reference voltage (mV),
+/// number of GPIO channels, and temperature sensor availability.
+///
+/// # Safety
+///
+/// Caller must ensure that `gallo` is a valid, opaque pointer to
+/// `PicoDeGallo` returned by `gallo_init()`, and that all output pointers
+/// are valid.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gallo_adc_get_config(
+    gallo: *mut PicoDeGallo,
+    out_resolution_bits: *mut u8,
+    out_nominal_reference_mv: *mut u16,
+    out_num_gpio_channels: *mut u8,
+    out_has_temp_sensor: *mut bool,
+) -> Status {
+    if gallo.is_null() {
+        eprintln!("Unexpected NULL context");
+        return Status::Uninitialized;
+    }
+
+    if out_resolution_bits.is_null()
+        || out_nominal_reference_mv.is_null()
+        || out_num_gpio_channels.is_null()
+        || out_has_temp_sensor.is_null()
+    {
+        eprintln!("Unexpected NULL output pointer");
+        return Status::InvalidArgument;
+    }
+
+    let gallo = unsafe { &*gallo };
+    match block_on(gallo.0.adc_get_config()) {
+        Ok(info) => {
+            unsafe {
+                *out_resolution_bits = info.resolution_bits;
+                *out_nominal_reference_mv = info.nominal_reference_mv;
+                *out_num_gpio_channels = info.num_gpio_channels;
+                *out_has_temp_sensor = info.has_temp_sensor;
+            }
+            Status::Ok
+        }
+        Err(e) => match e {
+            PicoDeGalloError::Comms(_) => Status::CommsFailed,
+            PicoDeGalloError::Endpoint(never) => match never {},
+        },
+    }
+}
+
 // ----------------------------- Version endpoint -----------------------------
 
 #[unsafe(no_mangle)]
@@ -1653,6 +1806,10 @@ mod tests {
             Status::PwmInvalidChannel as i32,
             Status::PwmInvalidDutyCycle as i32,
             Status::PwmInvalidConfiguration as i32,
+            Status::AdcReadFailed as i32,
+            Status::AdcReadTemperatureFailed as i32,
+            Status::AdcGetConfigFailed as i32,
+            Status::AdcConversionFailed as i32,
         ];
         for code in error_codes {
             assert!(code < 0, "error code {code} should be negative");
@@ -1712,6 +1869,10 @@ mod tests {
             Status::PwmInvalidChannel as i32,
             Status::PwmInvalidDutyCycle as i32,
             Status::PwmInvalidConfiguration as i32,
+            Status::AdcReadFailed as i32,
+            Status::AdcReadTemperatureFailed as i32,
+            Status::AdcGetConfigFailed as i32,
+            Status::AdcConversionFailed as i32,
         ];
         let unique: HashSet<i32> = codes.iter().copied().collect();
         assert_eq!(codes.len(), unique.len(), "duplicate status codes found");
@@ -1974,6 +2135,33 @@ mod tests {
         assert_eq!(status, Status::Uninitialized);
     }
 
+    #[test]
+    fn adc_read_null_device_returns_uninitialized() {
+        let status = unsafe { gallo_adc_read(std::ptr::null_mut(), 0, std::ptr::null_mut()) };
+        assert_eq!(status, Status::Uninitialized);
+    }
+
+    #[test]
+    fn adc_read_temperature_null_device_returns_uninitialized() {
+        let status =
+            unsafe { gallo_adc_read_temperature(std::ptr::null_mut(), std::ptr::null_mut()) };
+        assert_eq!(status, Status::Uninitialized);
+    }
+
+    #[test]
+    fn adc_get_config_null_device_returns_uninitialized() {
+        let status = unsafe {
+            gallo_adc_get_config(
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(status, Status::Uninitialized);
+    }
+
     // ----------------------------- Null buffer checks -----------------------------
 
     #[test]
@@ -2103,6 +2291,18 @@ mod tests {
         assert_eq!(
             uart_error_to_status(PicoDeGalloError::Endpoint(UartError::Other)),
             Status::UartReadFailed
+        );
+    }
+
+    #[test]
+    fn adc_error_mapping() {
+        assert_eq!(
+            adc_error_to_status(PicoDeGalloError::Endpoint(AdcError::ConversionFailed)),
+            Status::AdcConversionFailed
+        );
+        assert_eq!(
+            adc_error_to_status(PicoDeGalloError::Endpoint(AdcError::Other)),
+            Status::AdcReadFailed
         );
     }
 }

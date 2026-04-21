@@ -8,6 +8,7 @@
 //! - **SPI**: read, write, full-duplex transfer, and write-then-read
 //! - **UART**: read, write, flush, and baud rate configuration
 //! - **PWM**: duty cycle control, enable/disable, frequency/phase configuration
+//! - **ADC**: single-shot reads, temperature sensor, configuration queries
 //! - **Configuration**: set I2C/SPI/UART bus frequencies and SPI mode
 //! - **Device management**: list connected devices, query firmware version
 //!
@@ -32,8 +33,8 @@
 
 use clap::{Parser, Subcommand, ValueEnum};
 use color_eyre::{Result, eyre::eyre};
+use pico_de_gallo_lib::{AdcChannel, I2cFrequency, PicoDeGallo, SpiPhase, SpiPolarity, list_devices};
 use pico_de_gallo_lib::{GpioDirection, GpioPull, GpioState};
-use pico_de_gallo_lib::{I2cFrequency, PicoDeGallo, SpiPhase, SpiPolarity, list_devices};
 use std::num::ParseIntError;
 use tabled::builder::Builder;
 use tabled::settings::object::Rows;
@@ -175,6 +176,13 @@ enum Commands {
         /// PWM commands
         #[command(subcommand)]
         command: PwmCommands,
+    },
+
+    /// ADC access methods
+    Adc {
+        /// ADC commands
+        #[command(subcommand)]
+        command: AdcCommands,
     },
 }
 
@@ -415,6 +423,22 @@ enum PwmCommands {
     },
 }
 
+#[derive(Subcommand, Debug)]
+enum AdcCommands {
+    /// Read a single ADC sample (raw 12-bit value)
+    Read {
+        /// ADC channel: 0–3 for GPIO26–29, 4 for temperature sensor
+        #[arg(short, long)]
+        channel: u8,
+    },
+
+    /// Read the on-die temperature sensor (°C)
+    Temperature,
+
+    /// Query ADC configuration (resolution, reference, channels)
+    Info,
+}
+
 fn print_data(data: &[u8], format: &OutputFormat) {
     match format {
         OutputFormat::Hex => {
@@ -509,6 +533,11 @@ impl Cli {
                     phase_correct,
                 } => self.pwm_set_config(*channel, *frequency, *phase_correct).await,
                 PwmCommands::GetConfig { channel } => self.pwm_get_config(*channel).await,
+            },
+            Commands::Adc { command } => match command {
+                AdcCommands::Read { channel } => self.adc_read(*channel).await,
+                AdcCommands::Temperature => self.adc_read_temperature().await,
+                AdcCommands::Info => self.adc_get_info().await,
             },
         }
     }
@@ -892,6 +921,50 @@ impl Cli {
             "PWM channel {channel}: frequency={} Hz, phase_correct={}, enabled={}",
             info.frequency_hz, info.phase_correct, info.enabled
         );
+        Ok(())
+    }
+
+    async fn adc_read(&self, channel: u8) -> Result<()> {
+        let adc_channel = match channel {
+            0 => AdcChannel::Adc0,
+            1 => AdcChannel::Adc1,
+            2 => AdcChannel::Adc2,
+            3 => AdcChannel::Adc3,
+            4 => AdcChannel::TempSensor,
+            _ => return Err(eyre!("invalid ADC channel {channel}: expected 0–4")),
+        };
+        let pg = self.connect();
+        let raw = pg
+            .adc_read(adc_channel)
+            .await
+            .map_err(|e| eyre!("{:?}", e).wrap_err("adc read failed"))?;
+        let voltage_mv = (raw as u32) * 3300 / 4096;
+        println!("ADC channel {channel} ({adc_channel}): raw={raw}, ~{voltage_mv} mV");
+        Ok(())
+    }
+
+    async fn adc_read_temperature(&self) -> Result<()> {
+        let pg = self.connect();
+        let millidegrees = pg
+            .adc_read_temperature()
+            .await
+            .map_err(|e| eyre!("{:?}", e).wrap_err("adc read-temperature failed"))?;
+        let degrees = millidegrees as f64 / 1000.0;
+        println!("On-die temperature: {degrees:.1} °C ({millidegrees} m°C)");
+        Ok(())
+    }
+
+    async fn adc_get_info(&self) -> Result<()> {
+        let pg = self.connect();
+        let info = pg
+            .adc_get_config()
+            .await
+            .map_err(|e| eyre!("{:?}", e).wrap_err("adc get-config failed"))?;
+        println!("ADC configuration:");
+        println!("  Resolution:       {} bits", info.resolution_bits);
+        println!("  Nominal ref:      {} mV", info.nominal_reference_mv);
+        println!("  GPIO channels:    {}", info.num_gpio_channels);
+        println!("  Temp sensor:      {}", info.has_temp_sensor);
         Ok(())
     }
 }

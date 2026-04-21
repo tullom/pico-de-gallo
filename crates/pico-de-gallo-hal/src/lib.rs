@@ -3,7 +3,7 @@
 //! backed by a Pico de Gallo USB bridge.
 //!
 //! This crate lets you run embedded Rust drivers on a host machine by
-//! forwarding I2C, SPI, GPIO, PWM, and delay operations to a Pico de Gallo
+//! forwarding I2C, SPI, GPIO, PWM, ADC, and delay operations to a Pico de Gallo
 //! device over USB.
 //!
 //! # Quick Start
@@ -44,8 +44,8 @@
 //! | Delay | [`DelayNs`](embedded_hal::delay::DelayNs) | [`DelayNs`](embedded_hal_async::delay::DelayNs) |
 
 use pico_de_gallo_lib::{
-    GpioDirection, GpioError, GpioPull, GpioState, I2cError, PicoDeGallo, PicoDeGalloError,
-    PwmError, SpiError, UartError,
+    AdcChannel, AdcConfigurationInfo, AdcError, GpioDirection, GpioError, GpioPull, GpioState,
+    I2cError, PicoDeGallo, PicoDeGalloError, PwmError, SpiError, UartError,
 };
 use std::sync::Arc;
 use tokio::runtime::{Handle, Runtime};
@@ -327,6 +327,69 @@ impl Hal {
             gallo,
             handle,
         }
+    }
+
+    /// Perform a single-shot ADC read on the specified channel.
+    ///
+    /// Returns a raw 12-bit value (0–4095). Convert to approximate voltage
+    /// with `V ≈ raw × 3.3 / 4096`.
+    ///
+    /// There is no standard `embedded-hal` ADC trait in 1.0, so this is
+    /// exposed as a project-specific method.
+    pub fn adc_read(&self, channel: AdcChannel) -> Result<u16, AdcHalError> {
+        if Self::in_async_context() {
+            block_in_place(|| self.adc_read_inner(channel))
+        } else {
+            self.adc_read_inner(channel)
+        }
+    }
+
+    fn adc_read_inner(&self, channel: AdcChannel) -> Result<u16, AdcHalError> {
+        let handle = self.handle.clone();
+        let gallo = handle.block_on(self.gallo.lock());
+        handle
+            .block_on(gallo.adc_read(channel))
+            .map_err(AdcHalError::from)
+    }
+
+    /// Read the on-die temperature sensor.
+    ///
+    /// Returns the temperature in **millidegrees Celsius**
+    /// (e.g., 27000 = 27.000 °C). Approximate — depends on ADC_AVDD.
+    pub fn adc_read_temperature(&self) -> Result<i32, AdcHalError> {
+        if Self::in_async_context() {
+            block_in_place(|| self.adc_read_temperature_inner())
+        } else {
+            self.adc_read_temperature_inner()
+        }
+    }
+
+    fn adc_read_temperature_inner(&self) -> Result<i32, AdcHalError> {
+        let handle = self.handle.clone();
+        let gallo = handle.block_on(self.gallo.lock());
+        handle
+            .block_on(gallo.adc_read_temperature())
+            .map_err(AdcHalError::from)
+    }
+
+    /// Query the ADC configuration (resolution, reference, channel count).
+    pub fn adc_get_config(&self) -> Result<AdcConfigurationInfo, AdcHalError> {
+        if Self::in_async_context() {
+            block_in_place(|| self.adc_get_config_inner())
+        } else {
+            self.adc_get_config_inner()
+        }
+    }
+
+    fn adc_get_config_inner(&self) -> Result<AdcConfigurationInfo, AdcHalError> {
+        let handle = self.handle.clone();
+        let gallo = handle.block_on(self.gallo.lock());
+        handle
+            .block_on(gallo.adc_get_config())
+            .map_err(|e| match e {
+                PicoDeGalloError::Comms(c) => AdcHalError::Comms(format!("{c:?}")),
+                PicoDeGalloError::Endpoint(never) => match never {},
+            })
     }
 
     /// Create an [`SpiDevice`] that manages chip-select on `cs_pin`.
@@ -1324,6 +1387,39 @@ impl embedded_hal::pwm::SetDutyCycle for PwmChannel {
     }
 }
 
+// ---------------------------------------------------------------------------
+// ADC
+// ---------------------------------------------------------------------------
+
+/// Error type for ADC HAL operations.
+#[derive(Debug)]
+pub enum AdcHalError {
+    /// An ADC-specific error from the device firmware.
+    Adc(AdcError),
+    /// A USB communication error.
+    Comms(String),
+}
+
+impl core::fmt::Display for AdcHalError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Adc(e) => write!(f, "{e}"),
+            Self::Comms(msg) => write!(f, "communication error: {msg}"),
+        }
+    }
+}
+
+impl std::error::Error for AdcHalError {}
+
+impl From<PicoDeGalloError<AdcError>> for AdcHalError {
+    fn from(e: PicoDeGalloError<AdcError>) -> Self {
+        match e {
+            PicoDeGalloError::Endpoint(e) => Self::Adc(e),
+            PicoDeGalloError::Comms(c) => Self::Comms(format!("{c:?}")),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1505,5 +1601,29 @@ mod tests {
         use embedded_hal_async::delay::DelayNs;
         let mut delay = Delay;
         delay.delay_ns(1).await;
+    }
+
+    // --- ADC error tests ---
+
+    #[test]
+    fn adc_hal_error_display_conversion_failed() {
+        let err = AdcHalError::Adc(AdcError::ConversionFailed);
+        assert_eq!(format!("{err}"), "ADC conversion failed");
+    }
+
+    #[test]
+    fn adc_hal_error_display_comms() {
+        let err = AdcHalError::Comms("timeout".into());
+        assert_eq!(format!("{err}"), "communication error: timeout");
+    }
+
+    #[test]
+    fn adc_hal_error_from_endpoint() {
+        let e: PicoDeGalloError<AdcError> = PicoDeGalloError::Endpoint(AdcError::Other);
+        let hal_err = AdcHalError::from(e);
+        match hal_err {
+            AdcHalError::Adc(AdcError::Other) => {}
+            other => panic!("expected Adc(Other), got {other:?}"),
+        }
     }
 }

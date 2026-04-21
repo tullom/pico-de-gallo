@@ -50,6 +50,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `gallo_pwm_set_config`, `gallo_pwm_get_config`) and 9 status codes (-41 to -49).
 - **app**: `gallo pwm` subcommand group with `set-duty`, `get-duty`, `enable`,
   `disable`, `set-config`, and `get-config` commands.
+- **internal**: 3 ADC endpoints (`adc/read`, `adc/read-temperature`,
+  `adc/get-config`), `AdcChannel` enum (5 variants: Adc0–Adc3 + TempSensor),
+  `AdcError` enum (2 variants), `AdcReadRequest` and `AdcConfigurationInfo`
+  types. Constants: `NUM_ADC_GPIO_CHANNELS`, `ADC_RESOLUTION_BITS`,
+  `ADC_NOMINAL_REFERENCE_MV`.
+- **firmware**: ADC support on GPIO 26–29 (4 GPIO channels) plus the on-die
+  temperature sensor. Uses `Adc::new_blocking` for single-shot reads.
+  Temperature returned in millidegrees Celsius via integer math.
+- **lib**: `adc_read(channel)`, `adc_read_temperature()`, `adc_get_config()`
+  methods. Re-exported `AdcChannel`, `AdcError`, `AdcConfigurationInfo`.
+- **hal**: `AdcHalError` type. `Hal::adc_read(channel)`,
+  `adc_read_temperature()`, `adc_get_config()` convenience methods.
+- **ffi**: 3 ADC FFI functions (`gallo_adc_read`, `gallo_adc_read_temperature`,
+  `gallo_adc_get_config`) and 4 status codes (-50 to -53).
+- **app**: `gallo adc` subcommand group with `read`, `temperature`, and
+  `info` commands.
 - **internal**: 5 UART endpoints (`uart/read`, `uart/write`, `uart/flush`,
   `uart/set-config`, `uart/get-config`), `UartError` enum (7 variants),
   `UartReadRequest`, `UartWriteRequest`, `UartSetConfigurationRequest`, and

@@ -24,6 +24,7 @@ Commands:
   gpio     GPIO access methods
   uart     UART access methods
   pwm      PWM control methods
+  adc      ADC access methods
   help     Print this message or the help of the given subcommand(s)
 
 Options:
@@ -280,6 +281,9 @@ endpoints exposed by the firmware. The table below provides a summary.
 | `uart_flush`                 |                                                               | Flushes the UART transmit buffer                                           |
 | `uart_set_config`            | `baud_rate`                                                   | Sets the UART baud rate (must be > 0)                                      |
 | `uart_get_config`            |                                                               | Returns the active UART configuration (baud rate)                          |
+| `adc_read`                   | `channel` (AdcChannel enum)                                   | Reads a single 12-bit sample from the given ADC channel                    |
+| `adc_read_temperature`       |                                                               | Reads the on-die temperature sensor (returns millidegrees Celsius)         |
+| `adc_get_config`             |                                                               | Returns the ADC configuration (resolution, reference, channels)            |
 
 ## Gallo Hal
 

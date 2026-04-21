@@ -36,6 +36,8 @@
 //!   [`PwmEnableRequest`], [`PwmDisableRequest`], [`PwmSetConfigurationRequest`],
 //!   [`PwmGetConfigurationRequest`], [`PwmDutyCycleInfo`], [`PwmConfigurationInfo`],
 //!   and their shared error type [`PwmError`].
+//! - **ADC types**: [`AdcReadRequest`], [`AdcChannel`], [`AdcConfigurationInfo`],
+//!   and their shared error type [`AdcError`].
 //! - **Configuration**: [`I2cSetConfigurationRequest`], [`SpiSetConfigurationRequest`],
 //!   [`GpioSetConfigurationRequest`], [`UartSetConfigurationRequest`],
 //!   [`PwmSetConfigurationRequest`],
@@ -177,6 +179,13 @@ pub type PwmSetConfigurationResponse = Result<(), PwmConfigError>;
 /// Response type for PWM get-configuration queries.
 pub type PwmGetConfigurationResponse = Result<PwmConfigurationInfo, PwmError>;
 
+/// Response type for ADC read operations.
+pub type AdcReadResponse = Result<u16, AdcError>;
+/// Response type for ADC read-temperature operations (millidegrees Celsius).
+pub type AdcReadTemperatureResponse = Result<i32, AdcError>;
+/// Response type for ADC get-configuration queries.
+pub type AdcGetConfigurationResponse = AdcConfigurationInfo;
+
 endpoints! {
     list = ENDPOINT_LIST;
     | EndpointTy          | RequestTy                  | ResponseTy                  | Path                |
@@ -213,6 +222,9 @@ endpoints! {
     | PwmDisable            | PwmDisableRequest             | PwmDisableResponse            | "pwm/disable"        |
     | PwmSetConfiguration   | PwmSetConfigurationRequest    | PwmSetConfigurationResponse   | "pwm/set-config"     |
     | PwmGetConfiguration   | PwmGetConfigurationRequest    | PwmGetConfigurationResponse   | "pwm/get-config"     |
+    | AdcRead               | AdcReadRequest                | AdcReadResponse               | "adc/read"           |
+    | AdcReadTemperature    | ()                            | AdcReadTemperatureResponse    | "adc/read-temperature" |
+    | AdcGetConfiguration   | ()                            | AdcGetConfigurationResponse   | "adc/get-config"     |
     | Version               | ()                            | VersionInfo                   | "version"            |
 }
 
@@ -817,6 +829,125 @@ pub struct PwmConfigurationInfo {
     pub phase_correct: bool,
     /// Whether the slice is currently enabled.
     pub enabled: bool,
+}
+
+// --- ADC (Analog-to-Digital Converter)
+
+/// Number of external (GPIO-based) ADC channels exposed by the firmware.
+///
+/// Channels [`AdcChannel::Adc0`] through [`AdcChannel::Adc3`] map to physical
+/// pins GPIO26–GPIO29 on the Pico 2 header.
+pub const NUM_ADC_GPIO_CHANNELS: usize = 4;
+
+/// ADC resolution in bits.
+///
+/// The RP2350 has a 12-bit SAR ADC; raw readings are in the range 0–4095.
+pub const ADC_RESOLUTION_BITS: u8 = 12;
+
+/// Nominal ADC reference voltage in millivolts.
+///
+/// On RP2350, ADC readings are referenced to ADC_AVDD (nominally 3.3 V).
+/// This is **not** a precision reference — actual voltage may vary with
+/// supply quality.
+pub const ADC_NOMINAL_REFERENCE_MV: u16 = 3300;
+
+/// ADC channel selector.
+///
+/// Identifies which ADC input to sample. GPIO-based channels (`Adc0`–`Adc3`)
+/// read external analog voltages on GPIO26–GPIO29. The [`TempSensor`](AdcChannel::TempSensor)
+/// variant reads the RP2350's on-die temperature sensor.
+///
+/// # Wire Compatibility
+///
+/// Variants are serialized as discriminant integers (0–4). **Do not**
+/// reorder or insert variants before existing ones — that changes the
+/// wire encoding and breaks backward compatibility.
+#[derive(Serialize, Deserialize, Schema, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdcChannel {
+    /// ADC channel 0 — GPIO26.
+    Adc0 = 0,
+    /// ADC channel 1 — GPIO27.
+    Adc1 = 1,
+    /// ADC channel 2 — GPIO28.
+    Adc2 = 2,
+    /// ADC channel 3 — GPIO29.
+    Adc3 = 3,
+    /// Internal temperature sensor (RP2350 on-die).
+    TempSensor = 4,
+}
+
+impl core::fmt::Display for AdcChannel {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Adc0 => write!(f, "ADC0 (GPIO26)"),
+            Self::Adc1 => write!(f, "ADC1 (GPIO27)"),
+            Self::Adc2 => write!(f, "ADC2 (GPIO28)"),
+            Self::Adc3 => write!(f, "ADC3 (GPIO29)"),
+            Self::TempSensor => write!(f, "temperature sensor"),
+        }
+    }
+}
+
+/// Error from ADC operations, propagated from firmware.
+///
+/// # Wire Compatibility
+///
+/// Variants are serialized as discriminant integers. **Do not** reorder or
+/// insert variants before existing ones — that changes the wire encoding
+/// and breaks backward compatibility.
+#[derive(Serialize, Deserialize, Schema, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdcError {
+    /// The ADC hardware signaled a conversion error.
+    ConversionFailed,
+    /// Catch-all for unexpected ADC errors.
+    Other,
+}
+
+impl core::fmt::Display for AdcError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::ConversionFailed => write!(f, "ADC conversion failed"),
+            Self::Other => write!(f, "ADC error"),
+        }
+    }
+}
+
+/// Error returned when ADC configuration fails.
+///
+/// This is a convenience alias — ADC configuration shares the same error
+/// type as other ADC operations.
+pub type AdcConfigError = AdcError;
+
+/// Request to perform a single-shot ADC read on a specific channel.
+///
+/// Returns a raw 12-bit value (0–4095). The host can convert to voltage
+/// using `V = raw * nominal_reference_mv / 4096`.
+///
+/// For temperature readings, prefer the dedicated
+/// [`AdcReadTemperature`] endpoint which returns millidegrees Celsius.
+#[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
+pub struct AdcReadRequest {
+    /// Which ADC channel to sample.
+    pub channel: AdcChannel,
+}
+
+/// Current ADC configuration as reported by the firmware.
+///
+/// Returned by `adc/get-config`. Values are fixed for the RP2350 ADC
+/// but exposed for host discovery and consistency with other peripherals.
+#[derive(Serialize, Deserialize, Schema, Debug, Clone, PartialEq, Eq)]
+pub struct AdcConfigurationInfo {
+    /// ADC resolution in bits (always 12 for RP2350).
+    pub resolution_bits: u8,
+    /// Nominal ADC reference voltage in millivolts (typically 3300).
+    ///
+    /// **Note:** This is the nominal ADC_AVDD voltage, not a precision
+    /// reference. Actual voltage may vary.
+    pub nominal_reference_mv: u16,
+    /// Number of external (GPIO-based) ADC channels.
+    pub num_gpio_channels: u8,
+    /// Whether the internal temperature sensor is available.
+    pub has_temp_sensor: bool,
 }
 
 // --- Version
@@ -1887,5 +2018,95 @@ mod tests {
         let decoded: PwmConfigurationInfo = from_bytes(&bytes).unwrap();
         assert_eq!(decoded, info);
         assert_eq!(to_allocvec(&decoded).unwrap(), canonical);
+    }
+
+    // --- ADC tests ---
+
+    #[test]
+    fn adc_read_request_round_trip() {
+        let req = AdcReadRequest {
+            channel: AdcChannel::Adc2,
+        };
+        let bytes = to_allocvec(&req).unwrap();
+        let decoded: AdcReadRequest = from_bytes(&bytes).unwrap();
+        assert_eq!(req, decoded);
+    }
+
+    #[test]
+    fn adc_read_request_temp_sensor_round_trip() {
+        let req = AdcReadRequest {
+            channel: AdcChannel::TempSensor,
+        };
+        let bytes = to_allocvec(&req).unwrap();
+        let decoded: AdcReadRequest = from_bytes(&bytes).unwrap();
+        assert_eq!(req, decoded);
+    }
+
+    #[test]
+    fn adc_channel_display() {
+        assert_eq!(format!("{}", AdcChannel::Adc0), "ADC0 (GPIO26)");
+        assert_eq!(format!("{}", AdcChannel::Adc1), "ADC1 (GPIO27)");
+        assert_eq!(format!("{}", AdcChannel::Adc2), "ADC2 (GPIO28)");
+        assert_eq!(format!("{}", AdcChannel::Adc3), "ADC3 (GPIO29)");
+        assert_eq!(format!("{}", AdcChannel::TempSensor), "temperature sensor");
+    }
+
+    #[test]
+    fn adc_error_display() {
+        assert_eq!(
+            format!("{}", AdcError::ConversionFailed),
+            "ADC conversion failed"
+        );
+        assert_eq!(format!("{}", AdcError::Other), "ADC error");
+    }
+
+    #[test]
+    fn adc_configuration_info_round_trip() {
+        let info = AdcConfigurationInfo {
+            resolution_bits: 12,
+            nominal_reference_mv: 3300,
+            num_gpio_channels: 4,
+            has_temp_sensor: true,
+        };
+        let bytes = to_allocvec(&info).unwrap();
+        let decoded: AdcConfigurationInfo = from_bytes(&bytes).unwrap();
+        assert_eq!(info, decoded);
+    }
+
+    #[test]
+    fn adc_read_request_wire_stability() {
+        let req = AdcReadRequest {
+            channel: AdcChannel::Adc1,
+        };
+        let bytes = to_allocvec(&req).unwrap();
+        let canonical = bytes.clone();
+        let decoded: AdcReadRequest = from_bytes(&bytes).unwrap();
+        assert_eq!(decoded, req);
+        assert_eq!(to_allocvec(&decoded).unwrap(), canonical);
+    }
+
+    #[test]
+    fn adc_configuration_info_wire_stability() {
+        let info = AdcConfigurationInfo {
+            resolution_bits: 12,
+            nominal_reference_mv: 3300,
+            num_gpio_channels: 4,
+            has_temp_sensor: true,
+        };
+        let bytes = to_allocvec(&info).unwrap();
+        let canonical = bytes.clone();
+        let decoded: AdcConfigurationInfo = from_bytes(&bytes).unwrap();
+        assert_eq!(decoded, info);
+        assert_eq!(to_allocvec(&decoded).unwrap(), canonical);
+    }
+
+    #[test]
+    fn adc_channel_discriminants_are_stable() {
+        // Verify enum discriminants match expected wire values
+        assert_eq!(to_allocvec(&AdcChannel::Adc0).unwrap(), [0]);
+        assert_eq!(to_allocvec(&AdcChannel::Adc1).unwrap(), [1]);
+        assert_eq!(to_allocvec(&AdcChannel::Adc2).unwrap(), [2]);
+        assert_eq!(to_allocvec(&AdcChannel::Adc3).unwrap(), [3]);
+        assert_eq!(to_allocvec(&AdcChannel::TempSensor).unwrap(), [4]);
     }
 }
