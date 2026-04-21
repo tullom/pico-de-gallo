@@ -39,7 +39,7 @@
 //! |------------|---------------|-------------|
 //! | GPIO | [`OutputPin`](embedded_hal::digital::OutputPin), [`InputPin`](embedded_hal::digital::InputPin), [`StatefulOutputPin`](embedded_hal::digital::StatefulOutputPin) | [`Wait`](embedded_hal_async::digital::Wait) |
 //! | I2C | [`I2c`](embedded_hal::i2c::I2c) | [`I2c`](embedded_hal_async::i2c::I2c) |
-//! | SPI | [`SpiBus`](embedded_hal::spi::SpiBus) | [`SpiBus`](embedded_hal_async::spi::SpiBus) |
+//! | SPI | [`SpiBus`](embedded_hal::spi::SpiBus), [`SpiDevice`](embedded_hal::spi::SpiDevice) | [`SpiBus`](embedded_hal_async::spi::SpiBus), [`SpiDevice`](embedded_hal_async::spi::SpiDevice) |
 //! | Delay | [`DelayNs`](embedded_hal::delay::DelayNs) | [`DelayNs`](embedded_hal_async::delay::DelayNs) |
 
 use pico_de_gallo_lib::{GpioError, GpioState, I2cError, PicoDeGallo, PicoDeGalloError, SpiError};
@@ -175,6 +175,35 @@ impl Hal {
         let gallo = Arc::clone(&self.gallo);
         let handle = self.handle.clone();
         Spi { gallo, handle }
+    }
+
+    /// Create an [`SpiDevice`] that manages chip-select on `cs_pin`.
+    ///
+    /// The CS pin is driven high (deasserted) immediately. Each
+    /// [`SpiDevice::transaction`](embedded_hal::spi::SpiDevice::transaction)
+    /// call will assert CS low, perform the operations, flush, then deassert
+    /// CS high.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SpiHalError` if the initial CS-high drive fails (e.g. the
+    /// device is not connected or `cs_pin` is out of range).
+    pub fn spi_device(&self, cs_pin: u8) -> Result<SpiDev, SpiHalError> {
+        let gallo = Arc::clone(&self.gallo);
+        let handle = self.handle.clone();
+
+        // Drive CS high so the line starts deasserted.
+        let guard = handle.block_on(gallo.lock());
+        handle
+            .block_on(guard.gpio_put(cs_pin, GpioState::High))
+            .map_err(|e| SpiHalError::Comms(format!("CS init failed: {e:?}")))?;
+        drop(guard);
+
+        Ok(SpiDev {
+            gallo,
+            handle,
+            cs_pin,
+        })
     }
 
     /// Delay
@@ -681,6 +710,184 @@ impl embedded_hal_async::spi::SpiBus for Spi {
     }
 }
 
+// ----------------------------- SpiDevice ----------------------------
+
+/// SPI device handle implementing [`embedded-hal`] [`SpiDevice`](embedded_hal::spi::SpiDevice) traits.
+///
+/// Obtained from [`Hal::spi_device`]. Wraps the SPI bus with firmware-managed
+/// chip-select (CS) assertion via a GPIO pin. Each call to
+/// [`transaction`](embedded_hal::spi::SpiDevice::transaction) will:
+///
+/// 1. Assert CS (drive low)
+/// 2. Perform all requested operations
+/// 3. Flush the bus
+/// 4. Deassert CS (drive high)
+///
+/// # Cancellation Safety
+///
+/// The async [`SpiDevice`](embedded_hal_async::spi::SpiDevice) implementation
+/// is **not** cancellation-safe. If the future returned by `transaction()` is
+/// dropped after CS is asserted but before it is deasserted, the CS line will
+/// remain low. This matches the behavior of `embedded-hal-bus::ExclusiveDevice`.
+///
+/// # CS Pin Ownership
+///
+/// The caller is responsible for ensuring that the CS pin is not used
+/// concurrently by other [`Gpio`] handles or [`SpiDev`] instances.
+pub struct SpiDev {
+    gallo: Arc<Mutex<PicoDeGallo>>,
+    handle: Handle,
+    cs_pin: u8,
+}
+
+impl SpiDev {
+    /// Execute a blocking SPI transaction with CS management.
+    fn transaction_inner(
+        &mut self,
+        operations: &mut [embedded_hal::spi::Operation<'_, u8>],
+    ) -> std::result::Result<(), SpiHalError> {
+        let handle = &self.handle;
+        let gallo = handle.block_on(self.gallo.lock());
+
+        // Assert CS
+        handle
+            .block_on(gallo.gpio_put(self.cs_pin, GpioState::Low))
+            .map_err(|e| SpiHalError::Comms(format!("CS assert failed: {e:?}")))?;
+
+        // Run operations, capturing the first error
+        let op_result: std::result::Result<(), SpiHalError> = (|| {
+            for op in operations.iter_mut() {
+                match op {
+                    embedded_hal::spi::Operation::Read(buf) => {
+                        let contents = handle
+                            .block_on(gallo.spi_read(buf.len() as u16))
+                            .map_err(SpiHalError::from)?;
+                        buf.copy_from_slice(&contents);
+                    }
+                    embedded_hal::spi::Operation::Write(buf) => {
+                        handle
+                            .block_on(gallo.spi_write(buf))
+                            .map_err(SpiHalError::from)?;
+                    }
+                    embedded_hal::spi::Operation::Transfer(read, write) => {
+                        let contents = handle
+                            .block_on(gallo.spi_transfer(write))
+                            .map_err(SpiHalError::from)?;
+                        let len = read.len().min(contents.len());
+                        read[..len].copy_from_slice(&contents[..len]);
+                    }
+                    embedded_hal::spi::Operation::TransferInPlace(buf) => {
+                        let write_copy = buf.to_vec();
+                        let contents = handle
+                            .block_on(gallo.spi_transfer(&write_copy))
+                            .map_err(SpiHalError::from)?;
+                        let len = buf.len().min(contents.len());
+                        buf[..len].copy_from_slice(&contents[..len]);
+                    }
+                    embedded_hal::spi::Operation::DelayNs(ns) => {
+                        // Flush before sleeping so pending bytes are sent first
+                        handle.block_on(gallo.spi_flush()).map_err(SpiHalError::from)?;
+                        std::thread::sleep(std::time::Duration::from_nanos((*ns).into()));
+                    }
+                }
+            }
+            Ok(())
+        })();
+
+        // Flush (best-effort if operations already failed)
+        let flush_result = handle.block_on(gallo.spi_flush()).map_err(SpiHalError::from);
+
+        // Deassert CS (best-effort)
+        let _ = handle.block_on(gallo.gpio_put(self.cs_pin, GpioState::High));
+
+        // Bus/operation errors take priority over flush errors
+        op_result?;
+        flush_result
+    }
+}
+
+impl embedded_hal::spi::ErrorType for SpiDev {
+    type Error = SpiHalError;
+}
+
+impl embedded_hal::spi::SpiDevice for SpiDev {
+    fn transaction(
+        &mut self,
+        operations: &mut [embedded_hal::spi::Operation<'_, u8>],
+    ) -> std::result::Result<(), Self::Error> {
+        if Hal::in_async_context() {
+            block_in_place(|| self.transaction_inner(operations))
+        } else {
+            self.transaction_inner(operations)
+        }
+    }
+}
+
+impl embedded_hal_async::spi::SpiDevice for SpiDev {
+    async fn transaction(
+        &mut self,
+        operations: &mut [embedded_hal_async::spi::Operation<'_, u8>],
+    ) -> std::result::Result<(), Self::Error> {
+        let gallo = self.gallo.lock().await;
+
+        // Assert CS
+        gallo
+            .gpio_put(self.cs_pin, GpioState::Low)
+            .await
+            .map_err(|e| SpiHalError::Comms(format!("CS assert failed: {e:?}")))?;
+
+        // Run operations, capturing the first error
+        let op_result: std::result::Result<(), SpiHalError> = async {
+            for op in operations.iter_mut() {
+                match op {
+                    embedded_hal_async::spi::Operation::Read(buf) => {
+                        let contents = gallo
+                            .spi_read(buf.len() as u16)
+                            .await
+                            .map_err(SpiHalError::from)?;
+                        buf.copy_from_slice(&contents);
+                    }
+                    embedded_hal_async::spi::Operation::Write(buf) => {
+                        gallo.spi_write(buf).await.map_err(SpiHalError::from)?;
+                    }
+                    embedded_hal_async::spi::Operation::Transfer(read, write) => {
+                        let contents =
+                            gallo.spi_transfer(write).await.map_err(SpiHalError::from)?;
+                        let len = read.len().min(contents.len());
+                        read[..len].copy_from_slice(&contents[..len]);
+                    }
+                    embedded_hal_async::spi::Operation::TransferInPlace(buf) => {
+                        let write_copy = buf.to_vec();
+                        let contents = gallo
+                            .spi_transfer(&write_copy)
+                            .await
+                            .map_err(SpiHalError::from)?;
+                        let len = buf.len().min(contents.len());
+                        buf[..len].copy_from_slice(&contents[..len]);
+                    }
+                    embedded_hal_async::spi::Operation::DelayNs(ns) => {
+                        // Flush before sleeping so pending bytes are sent first
+                        gallo.spi_flush().await.map_err(SpiHalError::from)?;
+                        tokio::time::sleep(tokio::time::Duration::from_nanos((*ns).into())).await;
+                    }
+                }
+            }
+            Ok(())
+        }
+        .await;
+
+        // Flush (best-effort if operations already failed)
+        let flush_result = gallo.spi_flush().await.map_err(SpiHalError::from);
+
+        // Deassert CS (best-effort)
+        let _ = gallo.gpio_put(self.cs_pin, GpioState::High).await;
+
+        // Bus/operation errors take priority over flush errors
+        op_result?;
+        flush_result
+    }
+}
+
 // ----------------------------- Delay -----------------------------
 
 /// Delay provider using host-side timers.
@@ -758,6 +965,22 @@ mod tests {
     fn spi_error_kind_is_other() {
         use embedded_hal::spi::Error as _;
         let err = SpiHalError::Spi(SpiError::Other);
+        assert_eq!(err.kind(), embedded_hal::spi::ErrorKind::Other);
+    }
+
+    #[test]
+    fn spi_device_error_type_matches_spi_bus() {
+        // SpiDev and Spi share the same error type (SpiHalError),
+        // so drivers can mix SpiBus and SpiDevice errors.
+        fn assert_error_type<T: embedded_hal::spi::ErrorType<Error = SpiHalError>>() {}
+        assert_error_type::<Spi>();
+        assert_error_type::<SpiDev>();
+    }
+
+    #[test]
+    fn spi_device_comms_error_kind_is_other() {
+        use embedded_hal::spi::Error as _;
+        let err = SpiHalError::Comms("CS assert failed".into());
         assert_eq!(err.kind(), embedded_hal::spi::ErrorKind::Other);
     }
 

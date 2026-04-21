@@ -1,16 +1,12 @@
-use embedded_hal_bus::spi::ExclusiveDevice;
 use is31fl3743b_driver::{CSy, Is31fl3743b, SWx};
 use pico_de_gallo_hal::Hal;
 use std::time::Duration;
 
 fn main() {
     let hal = Hal::new();
-    let spi = hal.spi();
-    let delay = hal.delay();
-    let cs = hal.gpio(0);
 
-    // One SPI device only on the SPI bus
-    let spi_dev = ExclusiveDevice::new(spi, cs, delay).unwrap();
+    // Built-in SpiDevice with firmware-managed CS on GPIO 0
+    let spi_dev = hal.spi_device(0).expect("failed to create spi device");
 
     // Instantiate IS31FL3743B device
     let mut driver = Is31fl3743b::new(spi_dev).unwrap();

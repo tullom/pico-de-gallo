@@ -281,6 +281,19 @@ To clarify what we mean, a driver *crate* would add
 `pico-de-gallo-hal` as a dev dependency and use it for tests and
 examples.
 
+### Implemented Traits
+
+| Peripheral | Blocking Trait                               | Async Trait           |
+|------------|----------------------------------------------|-----------------------|
+| GPIO       | `OutputPin`, `InputPin`, `StatefulOutputPin` | `Wait`                |
+| I2C        | `I2c`                                        | `I2c`                 |
+| SPI        | `SpiBus`, `SpiDevice`                        | `SpiBus`, `SpiDevice` |
+| Delay      | `DelayNs`                                    | `DelayNs`             |
+
+> **Note:** `SpiDevice` manages chip-select (CS) automatically via a
+> GPIO pin. Use `hal.spi_device(cs_pin)` to create an `SpiDevice`
+> handle. For raw bus access without CS management, use `hal.spi()`.
+
 Here's a minimalistic example of how to use `pico-de-gallo-hal` to
 communicate with an I<sup>2</sup>C device.
 

@@ -19,7 +19,6 @@ tokio = { version = "1.52.1", features = ["rt-multi-thread", "time"] }
 
 [dev-dependencies]
 embedded-graphics = "0.8.2"
-embedded-hal-bus = "0.3.0"
 epd-waveshare = "0.6.0"
 is31fl3743b-driver = { version = "0.1.1", features = ["is_blocking"] }
 mpu6050-dmp = "0.6.1"

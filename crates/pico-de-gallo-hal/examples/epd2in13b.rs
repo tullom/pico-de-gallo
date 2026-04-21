@@ -5,7 +5,6 @@ use embedded_graphics::{
     text::{Baseline, Text, TextStyleBuilder},
 };
 use embedded_hal::delay::DelayNs;
-use embedded_hal_bus::spi::ExclusiveDevice;
 use epd_waveshare::{
     color::*,
     epd2in13_v2::{Display2in13, Epd2in13},
@@ -24,15 +23,12 @@ fn main() {
     )
     .expect("failed to set spi config");
 
-    let cs = hal.gpio(0);
     let dc = hal.gpio(1);
     let rst = hal.gpio(2);
     let busy = hal.gpio(3);
-    let delay = hal.delay();
-    let spi = hal.spi();
 
-    // One SPI device only on the SPI bus
-    let mut spi = ExclusiveDevice::new(spi, cs, delay).unwrap();
+    // Built-in SpiDevice with firmware-managed CS on GPIO 0
+    let mut spi = hal.spi_device(0).expect("failed to create spi device");
 
     let mut delay = hal.delay();
     let mut epd2in13 =

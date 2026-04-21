@@ -50,9 +50,10 @@ typed methods for every firmware endpoint. Requires the tokio runtime.
 
 ### HAL
 
-Implements both `embedded-hal` and `embedded-hal-async` traits, so
-embedded device drivers written against those traits can be tested on a
-host machine with real hardware attached to the Pico de Gallo.
+Implements both `embedded-hal` and `embedded-hal-async` traits — including
+`I2c`, `SpiBus`, `SpiDevice`, GPIO digital I/O, and delay — so embedded device
+drivers written against those traits can be tested on a host machine with real
+hardware attached to the Pico de Gallo.
 
 ### App
 

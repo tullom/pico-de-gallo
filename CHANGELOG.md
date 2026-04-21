@@ -27,6 +27,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   error types. SPI `set-config` validates frequency before applying (prevents
   panic on zero frequency).
 
+### Added
+
+- **hal**: `SpiDev` type implementing both `embedded_hal::spi::SpiDevice` and
+  `embedded_hal_async::spi::SpiDevice`. Manages chip-select (CS) via a GPIO pin,
+  asserting CS low before operations and deasserting high afterward with
+  automatic flush. Created via `Hal::spi_device(cs_pin)`.
+
 ### Fixed
 
 - **lib**: Corrected `MAX_TRANSFER_SIZE` references in rustdoc for `i2c_read`,

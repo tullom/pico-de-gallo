@@ -30,12 +30,16 @@ for more usage patterns.
 
 ## Implemented Traits
 
-| Peripheral | Blocking | Async |
-|------------|----------|-------|
-| GPIO | `OutputPin`, `InputPin`, `StatefulOutputPin` | `Wait` |
-| I²C | `I2c` | `I2c` |
-| SPI | `SpiBus` | `SpiBus` |
-| Delay | `DelayNs` | `DelayNs` |
+| Peripheral | Blocking                                     | Async                 |
+|------------|----------------------------------------------|-----------------------|
+| GPIO       | `OutputPin`, `InputPin`, `StatefulOutputPin` | `Wait`                |
+| I²C       | `I2c`                                        | `I2c`                 |
+| SPI        | `SpiBus`, `SpiDevice`                        | `SpiBus`, `SpiDevice` |
+| Delay      | `DelayNs`                                    | `DelayNs`             |
+
+`SpiDevice` manages chip-select (CS) automatically via a GPIO pin.
+Use `hal.spi_device(cs_pin)` to create one. For raw bus access without
+CS management, use `hal.spi()`.
 
 # License
 
