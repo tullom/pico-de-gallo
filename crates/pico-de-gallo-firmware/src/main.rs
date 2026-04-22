@@ -84,28 +84,28 @@ use embassy_usb::{Config, UsbDevice};
 use pico_de_gallo_internal::{
     ADC_NOMINAL_REFERENCE_MV, ADC_RESOLUTION_BITS, AdcChannel, AdcConfigurationInfo, AdcError, AdcGetConfiguration,
     AdcGetConfigurationResponse, AdcRead, AdcReadRequest, AdcReadResponse, AdcReadTemperature,
-    AdcReadTemperatureResponse, BATCH_OP_DELAY_NS, BATCH_OP_READ, BATCH_OP_TRANSFER, BATCH_OP_WRITE, ENDPOINT_LIST,
-    GpioDirection, GpioEdge, GpioError, GpioEvent, GpioEventTopic, GpioGet, GpioGetRequest, GpioGetResponse, GpioPull,
-    GpioPut, GpioPutRequest, GpioPutResponse, GpioSetConfiguration, GpioSetConfigurationRequest,
-    GpioSetConfigurationResponse, GpioState, GpioSubscribe, GpioSubscribeRequest, GpioSubscribeResponse,
-    GpioUnsubscribe, GpioUnsubscribeRequest, GpioUnsubscribeResponse, GpioWaitForAny, GpioWaitForFalling,
-    GpioWaitForHigh, GpioWaitForLow, GpioWaitForRising, GpioWaitRequest, GpioWaitResponse, I2cBatch, I2cBatchError,
-    I2cBatchRequest, I2cBatchResponse, I2cError, I2cFrequency, I2cGetConfiguration, I2cGetConfigurationResponse,
-    I2cRead, I2cReadRequest, I2cReadResponse, I2cScan, I2cScanRequest, I2cScanResponse, I2cSetConfiguration,
-    I2cSetConfigurationRequest, I2cSetConfigurationResponse, I2cWrite, I2cWriteRead, I2cWriteReadRequest,
-    I2cWriteReadResponse, I2cWriteRequest, I2cWriteResponse, MAX_BATCH_OPS, MAX_TRANSFER_SIZE, MICROSOFT_VID,
-    NUM_ADC_GPIO_CHANNELS, NUM_PWM_CHANNELS, PICO_DE_GALLO_PID, PingEndpoint, PwmConfigurationInfo, PwmDisable,
-    PwmDisableRequest, PwmDisableResponse, PwmDutyCycleInfo, PwmEnable, PwmEnableRequest, PwmEnableResponse, PwmError,
-    PwmGetConfiguration, PwmGetConfigurationRequest, PwmGetConfigurationResponse, PwmGetDutyCycle,
-    PwmGetDutyCycleRequest, PwmGetDutyCycleResponse, PwmSetConfiguration, PwmSetConfigurationRequest,
-    PwmSetConfigurationResponse, PwmSetDutyCycle, PwmSetDutyCycleRequest, PwmSetDutyCycleResponse, SpiBatch,
-    SpiBatchError, SpiBatchRequest, SpiBatchResponse, SpiConfigurationInfo, SpiError, SpiFlush, SpiFlushResponse,
-    SpiGetConfiguration, SpiGetConfigurationResponse, SpiPhase, SpiPolarity, SpiRead, SpiReadRequest, SpiReadResponse,
-    SpiSetConfiguration, SpiSetConfigurationRequest, SpiSetConfigurationResponse, SpiTransfer, SpiTransferRequest,
-    SpiTransferResponse, SpiWrite, SpiWriteRequest, SpiWriteResponse, TOPICS_IN_LIST, TOPICS_OUT_LIST,
-    UartConfigurationInfo, UartError, UartFlush, UartFlushResponse, UartGetConfiguration, UartGetConfigurationResponse,
-    UartRead, UartReadRequest, UartReadResponse, UartSetConfiguration, UartSetConfigurationRequest,
-    UartSetConfigurationResponse, UartWrite, UartWriteRequest, UartWriteResponse, Version, VersionInfo,
+    AdcReadTemperatureResponse, ENDPOINT_LIST, GpioDirection, GpioEdge, GpioError, GpioEvent, GpioEventTopic, GpioGet,
+    GpioGetRequest, GpioGetResponse, GpioPull, GpioPut, GpioPutRequest, GpioPutResponse, GpioSetConfiguration,
+    GpioSetConfigurationRequest, GpioSetConfigurationResponse, GpioState, GpioSubscribe, GpioSubscribeRequest,
+    GpioSubscribeResponse, GpioUnsubscribe, GpioUnsubscribeRequest, GpioUnsubscribeResponse, GpioWaitForAny,
+    GpioWaitForFalling, GpioWaitForHigh, GpioWaitForLow, GpioWaitForRising, GpioWaitRequest, GpioWaitResponse,
+    I2cBatch, I2cBatchError, I2cBatchOp, I2cBatchRequest, I2cBatchResponse, I2cError, I2cFrequency,
+    I2cGetConfiguration, I2cGetConfigurationResponse, I2cRead, I2cReadRequest, I2cReadResponse, I2cScan,
+    I2cScanRequest, I2cScanResponse, I2cSetConfiguration, I2cSetConfigurationRequest, I2cSetConfigurationResponse,
+    I2cWrite, I2cWriteRead, I2cWriteReadRequest, I2cWriteReadResponse, I2cWriteRequest, I2cWriteResponse,
+    MAX_BATCH_OPS, MAX_TRANSFER_SIZE, MICROSOFT_VID, NUM_ADC_GPIO_CHANNELS, NUM_PWM_CHANNELS, PICO_DE_GALLO_PID,
+    PingEndpoint, PwmConfigurationInfo, PwmDisable, PwmDisableRequest, PwmDisableResponse, PwmDutyCycleInfo, PwmEnable,
+    PwmEnableRequest, PwmEnableResponse, PwmError, PwmGetConfiguration, PwmGetConfigurationRequest,
+    PwmGetConfigurationResponse, PwmGetDutyCycle, PwmGetDutyCycleRequest, PwmGetDutyCycleResponse, PwmSetConfiguration,
+    PwmSetConfigurationRequest, PwmSetConfigurationResponse, PwmSetDutyCycle, PwmSetDutyCycleRequest,
+    PwmSetDutyCycleResponse, SpiBatch, SpiBatchError, SpiBatchOp, SpiBatchRequest, SpiBatchResponse,
+    SpiConfigurationInfo, SpiError, SpiFlush, SpiFlushResponse, SpiGetConfiguration, SpiGetConfigurationResponse,
+    SpiPhase, SpiPolarity, SpiRead, SpiReadRequest, SpiReadResponse, SpiSetConfiguration, SpiSetConfigurationRequest,
+    SpiSetConfigurationResponse, SpiTransfer, SpiTransferRequest, SpiTransferResponse, SpiWrite, SpiWriteRequest,
+    SpiWriteResponse, TOPICS_IN_LIST, TOPICS_OUT_LIST, UartConfigurationInfo, UartError, UartFlush, UartFlushResponse,
+    UartGetConfiguration, UartGetConfigurationResponse, UartRead, UartReadRequest, UartReadResponse,
+    UartSetConfiguration, UartSetConfigurationRequest, UartSetConfigurationResponse, UartWrite, UartWriteRequest,
+    UartWriteResponse, Version, VersionInfo,
 };
 use postcard_rpc::{
     define_dispatch,
@@ -672,7 +672,7 @@ async fn i2c_scan_handler<'a>(
 
 /// Handler for `i2c/batch` — executes multiple I2C operations in one USB transfer.
 ///
-/// Parses the packed ops stream and executes each operation sequentially.
+/// Decodes postcard-serialized ops and executes each operation sequentially.
 /// Read data is accumulated in `context.buf`. If any operation fails,
 /// subsequent operations are skipped and the error includes the index of
 /// the failed operation.
@@ -682,22 +682,38 @@ async fn i2c_batch_handler<'a>(
     req: I2cBatchRequest<'a>,
 ) -> I2cBatchResponse<'a> {
     let ops = req.ops;
+    let count = req.count as usize;
 
-    // Pre-validate: count ops and total read length
-    let num_ops = pico_de_gallo_internal::count_i2c_batch_ops(ops).ok_or(I2cBatchError {
-        failed_op: 0,
-        kind: I2cError::Other,
-    })?;
-    if num_ops > MAX_BATCH_OPS {
+    // Pre-validate op count
+    if count > MAX_BATCH_OPS {
         return Err(I2cBatchError {
             failed_op: 0,
             kind: I2cError::BufferTooLong,
         });
     }
-    let total_read = pico_de_gallo_internal::i2c_batch_response_len(ops).ok_or(I2cBatchError {
-        failed_op: 0,
-        kind: I2cError::Other,
-    })?;
+
+    // Pre-validate: walk the ops to compute total read length
+    let mut total_read = 0usize;
+    let mut remaining = ops;
+    let mut validated = 0usize;
+    while !remaining.is_empty() {
+        let (op, rest) = postcard::take_from_bytes::<I2cBatchOp>(remaining).map_err(|_| I2cBatchError {
+            failed_op: validated as u16,
+            kind: I2cError::Other,
+        })?;
+        match op {
+            I2cBatchOp::Read { len } => total_read += len as usize,
+            I2cBatchOp::Write { .. } => {}
+        }
+        remaining = rest;
+        validated += 1;
+    }
+    if validated != count {
+        return Err(I2cBatchError {
+            failed_op: 0,
+            kind: I2cError::Other,
+        });
+    }
     if total_read > MAX_TRANSFER_SIZE {
         return Err(I2cBatchError {
             failed_op: 0,
@@ -707,20 +723,21 @@ async fn i2c_batch_handler<'a>(
 
     debug!(
         "i2c batch: addr={=u8:#x} ops={=usize} total_read={=usize}",
-        req.address, num_ops, total_read
+        req.address, count, total_read
     );
 
-    let mut cursor = 0usize;
+    // Execute ops
+    let mut remaining = ops;
     let mut read_offset = 0usize;
     let mut op_index = 0u16;
 
-    while cursor < ops.len() {
-        let op_type = ops[cursor];
-        let len = u16::from_be_bytes([ops[cursor + 1], ops[cursor + 2]]) as usize;
-        cursor += 3;
+    while !remaining.is_empty() {
+        let (op, rest) = postcard::take_from_bytes::<I2cBatchOp>(remaining).unwrap();
+        remaining = rest;
 
-        match op_type {
-            BATCH_OP_READ => {
+        match op {
+            I2cBatchOp::Read { len } => {
+                let len = len as usize;
                 let buf = &mut context.buf[read_offset..read_offset + len];
                 context
                     .i2c
@@ -732,8 +749,7 @@ async fn i2c_batch_handler<'a>(
                     })?;
                 read_offset += len;
             }
-            BATCH_OP_WRITE => {
-                let data = &ops[cursor..cursor + len];
+            I2cBatchOp::Write { data } => {
                 context
                     .i2c
                     .write_async(req.address, data.iter().copied())
@@ -742,13 +758,6 @@ async fn i2c_batch_handler<'a>(
                         failed_op: op_index,
                         kind: map_i2c_error(e),
                     })?;
-                cursor += len;
-            }
-            _ => {
-                return Err(I2cBatchError {
-                    failed_op: op_index,
-                    kind: I2cError::Other,
-                });
             }
         }
         op_index += 1;
@@ -824,23 +833,40 @@ async fn spi_batch_handler<'a>(
     req: SpiBatchRequest<'a>,
 ) -> SpiBatchResponse<'a> {
     let ops = req.ops;
+    let count = req.count as usize;
     let cs_idx = usize::from(req.cs_pin);
 
-    // Pre-validate: count ops and total read length
-    let num_ops = pico_de_gallo_internal::count_spi_batch_ops(ops).ok_or(SpiBatchError {
-        failed_op: 0,
-        kind: SpiError::Other,
-    })?;
-    if num_ops > MAX_BATCH_OPS {
+    // Pre-validate op count
+    if count > MAX_BATCH_OPS {
         return Err(SpiBatchError {
             failed_op: 0,
             kind: SpiError::BufferTooLong,
         });
     }
-    let total_read = pico_de_gallo_internal::spi_batch_response_len(ops).ok_or(SpiBatchError {
-        failed_op: 0,
-        kind: SpiError::Other,
-    })?;
+
+    // Pre-validate: walk the ops to compute total read length
+    let mut total_read = 0usize;
+    let mut remaining = ops;
+    let mut validated = 0usize;
+    while !remaining.is_empty() {
+        let (op, rest) = postcard::take_from_bytes::<SpiBatchOp>(remaining).map_err(|_| SpiBatchError {
+            failed_op: validated as u16,
+            kind: SpiError::Other,
+        })?;
+        match op {
+            SpiBatchOp::Read { len } => total_read += len as usize,
+            SpiBatchOp::Transfer { data } => total_read += data.len(),
+            _ => {}
+        }
+        remaining = rest;
+        validated += 1;
+    }
+    if validated != count {
+        return Err(SpiBatchError {
+            failed_op: 0,
+            kind: SpiError::Other,
+        });
+    }
     if total_read > MAX_TRANSFER_SIZE {
         return Err(SpiBatchError {
             failed_op: 0,
@@ -866,7 +892,7 @@ async fn spi_batch_handler<'a>(
 
     debug!(
         "spi batch: cs_pin={=u8} ops={=usize} total_read={=usize}",
-        req.cs_pin, num_ops, total_read
+        req.cs_pin, count, total_read
     );
 
     // Assert CS (active low)
@@ -889,18 +915,17 @@ async fn spi_batch_execute<'a>(
     buf: &'a mut [u8; MAX_TRANSFER_SIZE],
     ops: &[u8],
 ) -> Result<&'a [u8], SpiBatchError> {
-    let mut cursor = 0usize;
+    let mut remaining = ops;
     let mut read_offset = 0usize;
     let mut op_index = 0u16;
 
-    while cursor < ops.len() {
-        let op_type = ops[cursor];
-        cursor += 1;
+    while !remaining.is_empty() {
+        let (op, rest) = postcard::take_from_bytes::<SpiBatchOp>(remaining).unwrap();
+        remaining = rest;
 
-        match op_type {
-            BATCH_OP_READ => {
-                let len = u16::from_be_bytes([ops[cursor], ops[cursor + 1]]) as usize;
-                cursor += 2;
+        match op {
+            SpiBatchOp::Read { len } => {
+                let len = len as usize;
                 let slice = &mut buf[read_offset..read_offset + len];
                 spi.read(slice).await.map_err(|_| SpiBatchError {
                     failed_op: op_index,
@@ -908,38 +933,23 @@ async fn spi_batch_execute<'a>(
                 })?;
                 read_offset += len;
             }
-            BATCH_OP_WRITE => {
-                let len = u16::from_be_bytes([ops[cursor], ops[cursor + 1]]) as usize;
-                cursor += 2;
-                let data = &ops[cursor..cursor + len];
+            SpiBatchOp::Write { data } => {
                 spi.write(data).await.map_err(|_| SpiBatchError {
                     failed_op: op_index,
                     kind: SpiError::Other,
                 })?;
-                cursor += len;
             }
-            BATCH_OP_TRANSFER => {
-                let len = u16::from_be_bytes([ops[cursor], ops[cursor + 1]]) as usize;
-                cursor += 2;
-                let data = &ops[cursor..cursor + len];
+            SpiBatchOp::Transfer { data } => {
+                let len = data.len();
                 let slice = &mut buf[read_offset..read_offset + len];
                 spi.transfer(slice, data).await.map_err(|_| SpiBatchError {
                     failed_op: op_index,
                     kind: SpiError::Other,
                 })?;
-                cursor += len;
                 read_offset += len;
             }
-            BATCH_OP_DELAY_NS => {
-                let ns = u32::from_be_bytes([ops[cursor], ops[cursor + 1], ops[cursor + 2], ops[cursor + 3]]);
-                cursor += 4;
+            SpiBatchOp::DelayNs { ns } => {
                 embassy_time::Timer::after(Duration::from_nanos(ns as u64)).await;
-            }
-            _ => {
-                return Err(SpiBatchError {
-                    failed_op: op_index,
-                    kind: SpiError::Other,
-                });
             }
         }
         op_index += 1;

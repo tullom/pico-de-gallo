@@ -827,7 +827,7 @@ impl Cli {
     }
 
     async fn i2c_batch(&self, address: u8, ops: &[String]) -> Result<()> {
-        use pico_de_gallo_lib::{I2cBatchOp, encode_i2c_batch_ops};
+        use pico_de_gallo_lib::I2cBatchOp;
 
         let pg = self.connect();
         let batch_ops = parse_i2c_batch_ops(ops)?;
@@ -838,10 +838,9 @@ impl Cli {
                 I2cBatchKind::Write => I2cBatchOp::Write { data },
             })
             .collect();
-        let encoded = encode_i2c_batch_ops(&refs);
 
         let result = pg
-            .i2c_batch(address, &encoded)
+            .i2c_batch(address, &refs)
             .await
             .map_err(|e| eyre!("{:?}", e).wrap_err("i2c batch failed"))?;
 
@@ -855,7 +854,7 @@ impl Cli {
     }
 
     async fn spi_batch(&self, cs: u8, ops: &[String]) -> Result<()> {
-        use pico_de_gallo_lib::{SpiBatchOp, encode_spi_batch_ops};
+        use pico_de_gallo_lib::SpiBatchOp;
 
         let pg = self.connect();
         let batch_ops = parse_spi_batch_ops(ops)?;
@@ -868,10 +867,9 @@ impl Cli {
                 SpiBatchKind::DelayNs(ns) => SpiBatchOp::DelayNs { ns: *ns },
             })
             .collect();
-        let encoded = encode_spi_batch_ops(&refs);
 
         let result = pg
-            .spi_batch(cs, &encoded)
+            .spi_batch(cs, &refs)
             .await
             .map_err(|e| eyre!("{:?}", e).wrap_err("spi batch failed"))?;
 

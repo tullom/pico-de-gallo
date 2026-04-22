@@ -833,7 +833,7 @@ impl I2c {
         address: embedded_hal::i2c::SevenBitAddress,
         operations: &mut [embedded_hal::i2c::Operation<'_>],
     ) -> std::result::Result<(), I2cHalError> {
-        use pico_de_gallo_lib::{I2cBatchOp, encode_i2c_batch_ops};
+        use pico_de_gallo_lib::I2cBatchOp;
 
         let handle = &self.handle;
         let gallo = handle.block_on(self.gallo.lock());
@@ -849,9 +849,8 @@ impl I2c {
             })
             .collect();
 
-        let encoded = encode_i2c_batch_ops(&batch_ops);
         let result = handle
-            .block_on(gallo.i2c_batch(address, &encoded))
+            .block_on(gallo.i2c_batch(address, &batch_ops))
             .map_err(I2cHalError::from)?;
 
         // Distribute read data back into the caller's buffers
@@ -892,7 +891,7 @@ impl embedded_hal_async::i2c::I2c<embedded_hal_async::i2c::SevenBitAddress> for 
         address: embedded_hal_async::i2c::SevenBitAddress,
         operations: &mut [embedded_hal_async::i2c::Operation<'_>],
     ) -> std::result::Result<(), Self::Error> {
-        use pico_de_gallo_lib::{I2cBatchOp, encode_i2c_batch_ops};
+        use pico_de_gallo_lib::I2cBatchOp;
 
         let gallo = self.gallo.lock().await;
 
@@ -906,9 +905,8 @@ impl embedded_hal_async::i2c::I2c<embedded_hal_async::i2c::SevenBitAddress> for 
             })
             .collect();
 
-        let encoded = encode_i2c_batch_ops(&batch_ops);
         let result = gallo
-            .i2c_batch(address, &encoded)
+            .i2c_batch(address, &batch_ops)
             .await
             .map_err(I2cHalError::from)?;
 
@@ -1115,7 +1113,7 @@ impl SpiDev {
         &mut self,
         operations: &mut [embedded_hal::spi::Operation<'_, u8>],
     ) -> std::result::Result<(), SpiHalError> {
-        use pico_de_gallo_lib::{SpiBatchOp, encode_spi_batch_ops};
+        use pico_de_gallo_lib::SpiBatchOp;
 
         let handle = &self.handle;
         let gallo = handle.block_on(self.gallo.lock());
@@ -1147,9 +1145,8 @@ impl SpiDev {
             batch_ops[*idx] = SpiBatchOp::Transfer { data: buf };
         }
 
-        let encoded = encode_spi_batch_ops(&batch_ops);
         let result = handle
-            .block_on(gallo.spi_batch(self.cs_pin, &encoded))
+            .block_on(gallo.spi_batch(self.cs_pin, &batch_ops))
             .map_err(SpiHalError::from)?;
 
         // Distribute read/transfer data back into the caller's buffers
@@ -1201,7 +1198,7 @@ impl embedded_hal_async::spi::SpiDevice for SpiDev {
         &mut self,
         operations: &mut [embedded_hal_async::spi::Operation<'_, u8>],
     ) -> std::result::Result<(), Self::Error> {
-        use pico_de_gallo_lib::{SpiBatchOp, encode_spi_batch_ops};
+        use pico_de_gallo_lib::SpiBatchOp;
 
         let gallo = self.gallo.lock().await;
 
@@ -1231,9 +1228,8 @@ impl embedded_hal_async::spi::SpiDevice for SpiDev {
             batch_ops[*idx] = SpiBatchOp::Transfer { data: buf };
         }
 
-        let encoded = encode_spi_batch_ops(&batch_ops);
         let result = gallo
-            .spi_batch(self.cs_pin, &encoded)
+            .spi_batch(self.cs_pin, &batch_ops)
             .await
             .map_err(SpiHalError::from)?;
 

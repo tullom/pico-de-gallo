@@ -39,8 +39,9 @@
 //! - **ADC types**: [`AdcReadRequest`], [`AdcChannel`], [`AdcConfigurationInfo`],
 //!   and their shared error type [`AdcError`].
 //! - **Batch types**: [`I2cBatchRequest`], [`I2cBatchError`], [`I2cBatchOp`],
-//!   [`SpiBatchRequest`], [`SpiBatchError`], [`SpiBatchOp`], and encoding helpers
-//!   [`encode_i2c_batch_ops`], [`encode_spi_batch_ops`].
+//!   [`SpiBatchRequest`], [`SpiBatchError`], [`SpiBatchOp`], encoding helpers
+//!   [`encode_i2c_batch_ops`], [`encode_spi_batch_ops`], and response-length
+//!   helpers [`i2c_batch_response_len`], [`spi_batch_response_len`].
 //! - **Configuration**: [`I2cSetConfigurationRequest`], [`SpiSetConfigurationRequest`],
 //!   [`GpioSetConfigurationRequest`], [`UartSetConfigurationRequest`],
 //!   [`PwmSetConfigurationRequest`],
@@ -1075,57 +1076,56 @@ pub struct AdcConfigurationInfo {
 /// a small amount of bookkeeping during execution.
 pub const MAX_BATCH_OPS: usize = 64;
 
-/// Opcode for a Read operation in a packed batch ops stream.
-pub const BATCH_OP_READ: u8 = 0x00;
-/// Opcode for a Write operation in a packed batch ops stream.
-pub const BATCH_OP_WRITE: u8 = 0x01;
-/// Opcode for a full-duplex Transfer operation (SPI only).
-pub const BATCH_OP_TRANSFER: u8 = 0x02;
-/// Opcode for a delay operation (SPI only).
-pub const BATCH_OP_DELAY_NS: u8 = 0x03;
-
 /// A single I2C operation for building a batch request.
 ///
-/// Used with [`encode_i2c_batch_ops`] to produce the packed `ops` stream
-/// for [`I2cBatchRequest`].
-#[derive(Debug, Clone, PartialEq)]
+/// The typed ops are serialized by postcard into the `ops` byte stream
+/// of [`I2cBatchRequest`]. Use [`encode_i2c_batch_ops`] on the host
+/// side to produce it, and [`postcard::take_from_bytes`] on the firmware
+/// side to iterate.
+///
+/// WARNING: do not reorder variants — postcard encodes by index, not discriminant.
+#[derive(Serialize, Deserialize, Schema, Debug, Clone, PartialEq)]
 pub enum I2cBatchOp<'a> {
     /// Read `len` bytes from the device.
     Read { len: u16 },
     /// Write `data` to the device.
-    Write { data: &'a [u8] },
+    Write {
+        #[serde(borrow)]
+        data: &'a [u8],
+    },
 }
 
 /// A single SPI operation for building a batch request.
 ///
-/// Used with [`encode_spi_batch_ops`] to produce the packed `ops` stream
-/// for [`SpiBatchRequest`].
-#[derive(Debug, Clone, PartialEq)]
+/// The typed ops are serialized by postcard into the `ops` byte stream
+/// of [`SpiBatchRequest`]. Use [`encode_spi_batch_ops`] on the host
+/// side to produce it, and [`postcard::take_from_bytes`] on the firmware
+/// side to iterate.
+///
+/// WARNING: do not reorder variants — postcard encodes by index, not discriminant.
+#[derive(Serialize, Deserialize, Schema, Debug, Clone, PartialEq)]
 pub enum SpiBatchOp<'a> {
     /// Read `len` bytes from the bus (MISO only).
     Read { len: u16 },
     /// Write `data` to the bus (MOSI only).
-    Write { data: &'a [u8] },
+    Write {
+        #[serde(borrow)]
+        data: &'a [u8],
+    },
     /// Full-duplex transfer: send `data` on MOSI, receive same number of bytes on MISO.
-    Transfer { data: &'a [u8] },
+    Transfer {
+        #[serde(borrow)]
+        data: &'a [u8],
+    },
     /// Delay for `ns` nanoseconds (best-effort, firmware resolution).
     DelayNs { ns: u32 },
 }
 
 /// Request to execute a batch of I2C operations as a single transaction.
 ///
-/// The `ops` field contains a packed operation stream. Use
-/// [`encode_i2c_batch_ops`] to produce it from a slice of [`I2cBatchOp`].
-///
-/// ## Packed ops encoding
-///
-/// Each operation is encoded as:
-/// - **Read**: `[0x00, len_hi, len_lo]` (3 bytes)
-/// - **Write**: `[0x01, len_hi, len_lo, data...]` (3 + len bytes)
-///
-/// The firmware executes operations sequentially. If any operation fails,
-/// subsequent operations are skipped and the error indicates which
-/// operation failed.
+/// The `ops` field contains a sequence of postcard-serialized
+/// [`I2cBatchOp`] values. Use [`encode_i2c_batch_ops`] on the host
+/// side to build it from a typed slice.
 ///
 /// ## Response
 ///
@@ -1145,7 +1145,9 @@ pub enum SpiBatchOp<'a> {
 pub struct I2cBatchRequest<'a> {
     /// 7-bit I2C slave address.
     pub address: u8,
-    /// Packed operation stream (see type docs for encoding).
+    /// Number of operations encoded in `ops`.
+    pub count: u16,
+    /// Postcard-serialized [`I2cBatchOp`] sequence.
     pub ops: &'a [u8],
 }
 
@@ -1179,13 +1181,9 @@ impl core::fmt::Display for I2cBatchError {
 /// operations, and deasserts CS after completion (even on error). This
 /// provides atomic [`SpiDevice::transaction`] semantics.
 ///
-/// ## Packed ops encoding
-///
-/// Each operation is encoded as:
-/// - **Read**: `[0x00, len_hi, len_lo]` (3 bytes)
-/// - **Write**: `[0x01, len_hi, len_lo, data...]` (3 + len bytes)
-/// - **Transfer**: `[0x02, len_hi, len_lo, data...]` (3 + len bytes)
-/// - **DelayNs**: `[0x03, ns_3, ns_2, ns_1, ns_0]` (5 bytes, big-endian)
+/// The `ops` field contains a sequence of postcard-serialized
+/// [`SpiBatchOp`] values. Use [`encode_spi_batch_ops`] on the host
+/// side to build it from a typed slice.
 ///
 /// ## Response
 ///
@@ -1200,7 +1198,9 @@ pub struct SpiBatchRequest<'a> {
     /// it low before the first operation and deasserts it high after the
     /// last (or on error).
     pub cs_pin: u8,
-    /// Packed operation stream (see type docs for encoding).
+    /// Number of operations encoded in `ops`.
+    pub count: u16,
+    /// Postcard-serialized [`SpiBatchOp`] sequence.
     pub ops: &'a [u8],
 }
 
@@ -1226,9 +1226,9 @@ impl core::fmt::Display for SpiBatchError {
     }
 }
 
-/// Encode a sequence of I2C batch operations into the packed wire format.
+/// Encode a sequence of I2C batch operations into the postcard wire format.
 ///
-/// Returns the packed byte stream suitable for [`I2cBatchRequest::ops`].
+/// Returns the serialized byte stream suitable for [`I2cBatchRequest::ops`].
 ///
 /// # Panics
 ///
@@ -1237,25 +1237,17 @@ impl core::fmt::Display for SpiBatchError {
 pub fn encode_i2c_batch_ops(ops: &[I2cBatchOp<'_>]) -> Vec<u8> {
     assert!(ops.len() <= MAX_BATCH_OPS, "too many batch operations");
     let mut buf = Vec::new();
+    let mut tmp = [0u8; 128];
     for op in ops {
-        match op {
-            I2cBatchOp::Read { len } => {
-                buf.push(BATCH_OP_READ);
-                buf.extend_from_slice(&len.to_be_bytes());
-            }
-            I2cBatchOp::Write { data } => {
-                buf.push(BATCH_OP_WRITE);
-                buf.extend_from_slice(&(data.len() as u16).to_be_bytes());
-                buf.extend_from_slice(data);
-            }
-        }
+        let encoded = postcard::to_slice(op, &mut tmp).expect("I2cBatchOp encode failed");
+        buf.extend_from_slice(encoded);
     }
     buf
 }
 
-/// Encode a sequence of SPI batch operations into the packed wire format.
+/// Encode a sequence of SPI batch operations into the postcard wire format.
 ///
-/// Returns the packed byte stream suitable for [`SpiBatchRequest::ops`].
+/// Returns the serialized byte stream suitable for [`SpiBatchRequest::ops`].
 ///
 /// # Panics
 ///
@@ -1264,178 +1256,35 @@ pub fn encode_i2c_batch_ops(ops: &[I2cBatchOp<'_>]) -> Vec<u8> {
 pub fn encode_spi_batch_ops(ops: &[SpiBatchOp<'_>]) -> Vec<u8> {
     assert!(ops.len() <= MAX_BATCH_OPS, "too many batch operations");
     let mut buf = Vec::new();
+    let mut tmp = [0u8; 128];
     for op in ops {
-        match op {
-            SpiBatchOp::Read { len } => {
-                buf.push(BATCH_OP_READ);
-                buf.extend_from_slice(&len.to_be_bytes());
-            }
-            SpiBatchOp::Write { data } => {
-                buf.push(BATCH_OP_WRITE);
-                buf.extend_from_slice(&(data.len() as u16).to_be_bytes());
-                buf.extend_from_slice(data);
-            }
-            SpiBatchOp::Transfer { data } => {
-                buf.push(BATCH_OP_TRANSFER);
-                buf.extend_from_slice(&(data.len() as u16).to_be_bytes());
-                buf.extend_from_slice(data);
-            }
-            SpiBatchOp::DelayNs { ns } => {
-                buf.push(BATCH_OP_DELAY_NS);
-                buf.extend_from_slice(&ns.to_be_bytes());
-            }
-        }
+        let encoded = postcard::to_slice(op, &mut tmp).expect("SpiBatchOp encode failed");
+        buf.extend_from_slice(encoded);
     }
     buf
 }
 
 /// Compute the total number of bytes that will appear in the response for
 /// an I2C batch — the sum of all Read lengths.
-///
-/// Returns `None` if the ops stream is malformed.
-pub fn i2c_batch_response_len(ops: &[u8]) -> Option<usize> {
-    let mut total = 0usize;
-    let mut cursor = 0usize;
-    while cursor < ops.len() {
-        if cursor + 3 > ops.len() {
-            return None;
-        }
-        let op_type = ops[cursor];
-        let len = u16::from_be_bytes([ops[cursor + 1], ops[cursor + 2]]) as usize;
-        cursor += 3;
-        match op_type {
-            BATCH_OP_READ => {
-                total = total.checked_add(len)?;
-            }
-            BATCH_OP_WRITE => {
-                cursor = cursor.checked_add(len)?;
-                if cursor > ops.len() {
-                    return None;
-                }
-            }
-            _ => return None,
-        }
-    }
-    Some(total)
+pub fn i2c_batch_response_len(ops: &[I2cBatchOp<'_>]) -> usize {
+    ops.iter()
+        .map(|op| match op {
+            I2cBatchOp::Read { len } => *len as usize,
+            I2cBatchOp::Write { .. } => 0,
+        })
+        .sum()
 }
 
 /// Compute the total number of bytes that will appear in the response for
 /// an SPI batch — the sum of Read and Transfer lengths.
-///
-/// Returns `None` if the ops stream is malformed.
-pub fn spi_batch_response_len(ops: &[u8]) -> Option<usize> {
-    let mut total = 0usize;
-    let mut cursor = 0usize;
-    while cursor < ops.len() {
-        let op_type = ops[cursor];
-        cursor += 1;
-        match op_type {
-            BATCH_OP_READ => {
-                if cursor + 2 > ops.len() {
-                    return None;
-                }
-                let len = u16::from_be_bytes([ops[cursor], ops[cursor + 1]]) as usize;
-                cursor += 2;
-                total = total.checked_add(len)?;
-            }
-            BATCH_OP_WRITE => {
-                if cursor + 2 > ops.len() {
-                    return None;
-                }
-                let len = u16::from_be_bytes([ops[cursor], ops[cursor + 1]]) as usize;
-                cursor += 2 + len;
-                if cursor > ops.len() {
-                    return None;
-                }
-            }
-            BATCH_OP_TRANSFER => {
-                if cursor + 2 > ops.len() {
-                    return None;
-                }
-                let len = u16::from_be_bytes([ops[cursor], ops[cursor + 1]]) as usize;
-                cursor += 2 + len;
-                if cursor > ops.len() {
-                    return None;
-                }
-                total = total.checked_add(len)?;
-            }
-            BATCH_OP_DELAY_NS => {
-                if cursor + 4 > ops.len() {
-                    return None;
-                }
-                cursor += 4;
-            }
-            _ => return None,
-        }
-    }
-    Some(total)
-}
-
-/// Count the number of operations in a packed I2C batch ops stream.
-///
-/// Returns `None` if the stream is malformed.
-pub fn count_i2c_batch_ops(ops: &[u8]) -> Option<usize> {
-    let mut count = 0usize;
-    let mut cursor = 0usize;
-    while cursor < ops.len() {
-        if cursor + 3 > ops.len() {
-            return None;
-        }
-        let op_type = ops[cursor];
-        let len = u16::from_be_bytes([ops[cursor + 1], ops[cursor + 2]]) as usize;
-        cursor += 3;
-        match op_type {
-            BATCH_OP_READ => {}
-            BATCH_OP_WRITE => {
-                cursor = cursor.checked_add(len)?;
-                if cursor > ops.len() {
-                    return None;
-                }
-            }
-            _ => return None,
-        }
-        count += 1;
-    }
-    Some(count)
-}
-
-/// Count the number of operations in a packed SPI batch ops stream.
-///
-/// Returns `None` if the stream is malformed.
-pub fn count_spi_batch_ops(ops: &[u8]) -> Option<usize> {
-    let mut count = 0usize;
-    let mut cursor = 0usize;
-    while cursor < ops.len() {
-        let op_type = ops[cursor];
-        cursor += 1;
-        match op_type {
-            BATCH_OP_READ => {
-                if cursor + 2 > ops.len() {
-                    return None;
-                }
-                cursor += 2;
-            }
-            BATCH_OP_WRITE | BATCH_OP_TRANSFER => {
-                if cursor + 2 > ops.len() {
-                    return None;
-                }
-                let len = u16::from_be_bytes([ops[cursor], ops[cursor + 1]]) as usize;
-                cursor += 2 + len;
-                if cursor > ops.len() {
-                    return None;
-                }
-            }
-            BATCH_OP_DELAY_NS => {
-                if cursor + 4 > ops.len() {
-                    return None;
-                }
-                cursor += 4;
-            }
-            _ => return None,
-        }
-        count += 1;
-    }
-    Some(count)
+pub fn spi_batch_response_len(ops: &[SpiBatchOp<'_>]) -> usize {
+    ops.iter()
+        .map(|op| match op {
+            SpiBatchOp::Read { len } => *len as usize,
+            SpiBatchOp::Transfer { data } => data.len(),
+            _ => 0,
+        })
+        .sum()
 }
 
 // --- Version
@@ -2717,6 +2566,83 @@ mod tests {
     // --- Transaction Batching Tests ---
 
     #[test]
+    fn i2c_batch_op_round_trip() {
+        let ops = [
+            I2cBatchOp::Read { len: 16 },
+            I2cBatchOp::Write {
+                data: &[0xAA, 0xBB],
+            },
+        ];
+        for op in &ops {
+            let bytes = to_allocvec(op).unwrap();
+            let decoded: I2cBatchOp = from_bytes(&bytes).unwrap();
+            assert_eq!(&decoded, op);
+        }
+    }
+
+    #[test]
+    fn spi_batch_op_round_trip() {
+        let ops = [
+            SpiBatchOp::Read { len: 8 },
+            SpiBatchOp::Write {
+                data: &[0x01, 0x02],
+            },
+            SpiBatchOp::Transfer { data: &[0xFF; 4] },
+            SpiBatchOp::DelayNs { ns: 1_000_000 },
+        ];
+        for op in &ops {
+            let bytes = to_allocvec(op).unwrap();
+            let decoded: SpiBatchOp = from_bytes(&bytes).unwrap();
+            assert_eq!(&decoded, op);
+        }
+    }
+
+    #[test]
+    fn i2c_batch_ops_take_from_bytes() {
+        let ops = [
+            I2cBatchOp::Write {
+                data: &[0xAA, 0xBB],
+            },
+            I2cBatchOp::Read { len: 4 },
+        ];
+        let encoded = encode_i2c_batch_ops(&ops);
+        let mut remaining: &[u8] = &encoded;
+        let mut decoded = Vec::new();
+        while !remaining.is_empty() {
+            let (op, rest) = postcard::take_from_bytes::<I2cBatchOp>(remaining).unwrap();
+            decoded.push(op);
+            remaining = rest;
+        }
+        assert_eq!(decoded.len(), 2);
+        assert_eq!(decoded[0], ops[0]);
+        assert_eq!(decoded[1], ops[1]);
+    }
+
+    #[test]
+    fn spi_batch_ops_take_from_bytes() {
+        let ops = [
+            SpiBatchOp::Write {
+                data: &[0x01, 0x02],
+            },
+            SpiBatchOp::Read { len: 8 },
+            SpiBatchOp::Transfer { data: &[0xFF; 4] },
+            SpiBatchOp::DelayNs { ns: 1000 },
+        ];
+        let encoded = encode_spi_batch_ops(&ops);
+        let mut remaining: &[u8] = &encoded;
+        let mut decoded = Vec::new();
+        while !remaining.is_empty() {
+            let (op, rest) = postcard::take_from_bytes::<SpiBatchOp>(remaining).unwrap();
+            decoded.push(op);
+            remaining = rest;
+        }
+        assert_eq!(decoded.len(), 4);
+        for (d, o) in decoded.iter().zip(ops.iter()) {
+            assert_eq!(d, o);
+        }
+    }
+
+    #[test]
     fn i2c_batch_request_round_trip() {
         let ops = encode_i2c_batch_ops(&[
             I2cBatchOp::Write {
@@ -2726,6 +2652,7 @@ mod tests {
         ]);
         let req = I2cBatchRequest {
             address: 0x50,
+            count: 2,
             ops: &ops,
         };
         let bytes = to_allocvec(&req).unwrap();
@@ -2745,6 +2672,7 @@ mod tests {
         ]);
         let req = SpiBatchRequest {
             cs_pin: 2,
+            count: 4,
             ops: &ops,
         };
         let bytes = to_allocvec(&req).unwrap();
@@ -2778,49 +2706,19 @@ mod tests {
     fn encode_i2c_empty_batch() {
         let ops = encode_i2c_batch_ops(&[]);
         assert!(ops.is_empty());
-        assert_eq!(i2c_batch_response_len(&ops), Some(0));
-        assert_eq!(count_i2c_batch_ops(&ops), Some(0));
+        assert_eq!(i2c_batch_response_len(&[]), 0);
     }
 
     #[test]
     fn encode_spi_empty_batch() {
         let ops = encode_spi_batch_ops(&[]);
         assert!(ops.is_empty());
-        assert_eq!(spi_batch_response_len(&ops), Some(0));
-        assert_eq!(count_spi_batch_ops(&ops), Some(0));
-    }
-
-    #[test]
-    fn encode_i2c_read_encoding() {
-        let ops = encode_i2c_batch_ops(&[I2cBatchOp::Read { len: 0x0102 }]);
-        assert_eq!(ops, [BATCH_OP_READ, 0x01, 0x02]);
-    }
-
-    #[test]
-    fn encode_i2c_write_encoding() {
-        let ops = encode_i2c_batch_ops(&[I2cBatchOp::Write {
-            data: &[0xAA, 0xBB, 0xCC],
-        }]);
-        assert_eq!(ops, [BATCH_OP_WRITE, 0x00, 0x03, 0xAA, 0xBB, 0xCC]);
-    }
-
-    #[test]
-    fn encode_spi_transfer_encoding() {
-        let ops = encode_spi_batch_ops(&[SpiBatchOp::Transfer {
-            data: &[0x01, 0x02],
-        }]);
-        assert_eq!(ops, [BATCH_OP_TRANSFER, 0x00, 0x02, 0x01, 0x02]);
-    }
-
-    #[test]
-    fn encode_spi_delay_encoding() {
-        let ops = encode_spi_batch_ops(&[SpiBatchOp::DelayNs { ns: 0x01020304 }]);
-        assert_eq!(ops, [BATCH_OP_DELAY_NS, 0x01, 0x02, 0x03, 0x04]);
+        assert_eq!(spi_batch_response_len(&[]), 0);
     }
 
     #[test]
     fn i2c_batch_response_len_mixed() {
-        let ops = encode_i2c_batch_ops(&[
+        let ops = [
             I2cBatchOp::Write {
                 data: &[0x00, 0x10],
             },
@@ -2829,55 +2727,22 @@ mod tests {
                 data: &[0x00, 0x20],
             },
             I2cBatchOp::Read { len: 32 },
-        ]);
-        assert_eq!(i2c_batch_response_len(&ops), Some(48));
-        assert_eq!(count_i2c_batch_ops(&ops), Some(4));
+        ];
+        assert_eq!(i2c_batch_response_len(&ops), 48);
     }
 
     #[test]
     fn spi_batch_response_len_mixed() {
-        let ops = encode_spi_batch_ops(&[
+        let ops = [
             SpiBatchOp::Write {
                 data: &[0x01, 0x02],
             },
             SpiBatchOp::Read { len: 8 },
             SpiBatchOp::Transfer { data: &[0xFF; 4] },
             SpiBatchOp::DelayNs { ns: 1000 },
-        ]);
+        ];
         // Read(8) + Transfer(4) = 12
-        assert_eq!(spi_batch_response_len(&ops), Some(12));
-        assert_eq!(count_spi_batch_ops(&ops), Some(4));
-    }
-
-    #[test]
-    fn i2c_batch_response_len_malformed() {
-        // Truncated header
-        assert_eq!(i2c_batch_response_len(&[BATCH_OP_READ, 0x00]), None);
-        // Unknown opcode
-        assert_eq!(i2c_batch_response_len(&[0xFF, 0x00, 0x01]), None);
-        // Write claims 5 bytes but only 2 follow
-        assert_eq!(
-            i2c_batch_response_len(&[BATCH_OP_WRITE, 0x00, 0x05, 0xAA, 0xBB]),
-            None
-        );
-    }
-
-    #[test]
-    fn spi_batch_response_len_malformed() {
-        // Truncated header
-        assert_eq!(spi_batch_response_len(&[BATCH_OP_READ, 0x00]), None);
-        // Unknown opcode
-        assert_eq!(spi_batch_response_len(&[0xFF, 0x00, 0x01]), None);
-        // Transfer claims 5 bytes but only 2 follow
-        assert_eq!(
-            spi_batch_response_len(&[BATCH_OP_TRANSFER, 0x00, 0x05, 0xAA, 0xBB]),
-            None
-        );
-        // Truncated delay
-        assert_eq!(
-            spi_batch_response_len(&[BATCH_OP_DELAY_NS, 0x00, 0x00]),
-            None
-        );
+        assert_eq!(spi_batch_response_len(&ops), 12);
     }
 
     #[test]
@@ -2904,8 +2769,16 @@ mod tests {
             .map(|_| I2cBatchOp::Read { len: 1 })
             .collect();
         let encoded = encode_i2c_batch_ops(&ops);
-        assert_eq!(count_i2c_batch_ops(&encoded), Some(MAX_BATCH_OPS));
-        assert_eq!(i2c_batch_response_len(&encoded), Some(MAX_BATCH_OPS));
+        // Verify we can decode all ops back
+        let mut remaining: &[u8] = &encoded;
+        let mut count = 0;
+        while !remaining.is_empty() {
+            let (_, rest) = postcard::take_from_bytes::<I2cBatchOp>(remaining).unwrap();
+            remaining = rest;
+            count += 1;
+        }
+        assert_eq!(count, MAX_BATCH_OPS);
+        assert_eq!(i2c_batch_response_len(&ops), MAX_BATCH_OPS);
     }
 
     #[test]
@@ -2914,21 +2787,27 @@ mod tests {
             .map(|_| SpiBatchOp::Read { len: 1 })
             .collect();
         let encoded = encode_spi_batch_ops(&ops);
-        assert_eq!(count_spi_batch_ops(&encoded), Some(MAX_BATCH_OPS));
-        assert_eq!(spi_batch_response_len(&encoded), Some(MAX_BATCH_OPS));
+        let mut remaining: &[u8] = &encoded;
+        let mut count = 0;
+        while !remaining.is_empty() {
+            let (_, rest) = postcard::take_from_bytes::<SpiBatchOp>(remaining).unwrap();
+            remaining = rest;
+            count += 1;
+        }
+        assert_eq!(count, MAX_BATCH_OPS);
+        assert_eq!(spi_batch_response_len(&ops), MAX_BATCH_OPS);
     }
 
     #[test]
     fn i2c_batch_write_only_response_len() {
-        let ops = encode_i2c_batch_ops(&[
+        let ops = [
             I2cBatchOp::Write {
                 data: &[0x00, 0x10],
             },
             I2cBatchOp::Write { data: &[0xFF; 32] },
-        ]);
+        ];
         // No reads → zero response bytes
-        assert_eq!(i2c_batch_response_len(&ops), Some(0));
-        assert_eq!(count_i2c_batch_ops(&ops), Some(2));
+        assert_eq!(i2c_batch_response_len(&ops), 0);
     }
 
     #[test]

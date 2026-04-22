@@ -68,7 +68,9 @@ pub use pico_de_gallo_internal::{
 pub use pico_de_gallo_internal::{
     AdcError, GpioError, I2cBatchError, I2cError, PwmError, SpiBatchError, SpiError, UartError,
 };
-pub use pico_de_gallo_internal::{encode_i2c_batch_ops, encode_spi_batch_ops};
+pub use pico_de_gallo_internal::{
+    encode_i2c_batch_ops, encode_spi_batch_ops, i2c_batch_response_len, spi_batch_response_len,
+};
 
 pub use postcard_rpc::host_client::{IoClosed, MultiSubscription};
 use postcard_rpc::{
@@ -256,15 +258,24 @@ impl PicoDeGallo {
 
     /// Execute a batch of I2C operations in a single USB transfer.
     ///
-    /// Use [`encode_i2c_batch_ops`] to build the packed `ops` buffer from
-    /// a slice of [`I2cBatchOp`] values. On success, returns the
-    /// concatenated read data from all Read operations in order.
+    /// Pass a slice of [`I2cBatchOp`] values directly — they are encoded
+    /// internally. On success, returns the concatenated read data from
+    /// all Read operations in order.
     ///
     /// This is much faster than issuing individual I2C calls when
     /// performing multi-step sequences (e.g., EEPROM programming).
-    pub async fn i2c_batch(&self, address: u8, ops: &[u8]) -> Result<Vec<u8>, PicoDeGalloError<I2cBatchError>> {
+    pub async fn i2c_batch(
+        &self,
+        address: u8,
+        ops: &[I2cBatchOp<'_>],
+    ) -> Result<Vec<u8>, PicoDeGalloError<I2cBatchError>> {
+        let encoded = encode_i2c_batch_ops(ops);
         self.client
-            .send_resp::<I2cBatch>(&I2cBatchRequest { address, ops })
+            .send_resp::<I2cBatch>(&I2cBatchRequest {
+                address,
+                count: ops.len() as u16,
+                ops: &encoded,
+            })
             .await?
             .map_err(PicoDeGalloError::Endpoint)
     }
@@ -310,17 +321,26 @@ impl PicoDeGallo {
 
     /// Execute a batch of SPI operations atomically under chip-select.
     ///
-    /// Use [`encode_spi_batch_ops`] to build the packed `ops` buffer from
-    /// a slice of [`SpiBatchOp`] values. The firmware asserts CS on
-    /// `cs_pin` before the first operation and deasserts it after the last
-    /// (or on error). On success, returns concatenated data from all Read
-    /// and Transfer operations in order.
+    /// Pass a slice of [`SpiBatchOp`] values directly — they are encoded
+    /// internally. The firmware asserts CS on `cs_pin` before the first
+    /// operation and deasserts it after the last (or on error). On success,
+    /// returns concatenated data from all Read and Transfer operations
+    /// in order.
     ///
     /// This is much faster than issuing individual SPI calls when
     /// performing multi-step sequences.
-    pub async fn spi_batch(&self, cs_pin: u8, ops: &[u8]) -> Result<Vec<u8>, PicoDeGalloError<SpiBatchError>> {
+    pub async fn spi_batch(
+        &self,
+        cs_pin: u8,
+        ops: &[SpiBatchOp<'_>],
+    ) -> Result<Vec<u8>, PicoDeGalloError<SpiBatchError>> {
+        let encoded = encode_spi_batch_ops(ops);
         self.client
-            .send_resp::<SpiBatch>(&SpiBatchRequest { cs_pin, ops })
+            .send_resp::<SpiBatch>(&SpiBatchRequest {
+                cs_pin,
+                count: ops.len() as u16,
+                ops: &encoded,
+            })
             .await?
             .map_err(PicoDeGalloError::Endpoint)
     }
