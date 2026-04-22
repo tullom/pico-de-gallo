@@ -3,7 +3,7 @@
 //! backed by a Pico de Gallo USB bridge.
 //!
 //! This crate lets you run embedded Rust drivers on a host machine by
-//! forwarding I2C, SPI, GPIO, PWM, ADC, and delay operations to a Pico de Gallo
+//! forwarding I2C, SPI, GPIO, PWM, ADC, 1-Wire, and delay operations to a Pico de Gallo
 //! device over USB.
 //!
 //! # Quick Start
@@ -45,7 +45,8 @@
 
 use pico_de_gallo_lib::{
     AdcChannel, AdcConfigurationInfo, AdcError, GpioDirection, GpioEdge, GpioError, GpioPull,
-    GpioState, I2cError, PicoDeGallo, PicoDeGalloError, PwmError, SpiError, UartError,
+    GpioState, I2cError, OneWireError, PicoDeGallo, PicoDeGalloError, PwmError, SpiError,
+    UartError,
 };
 use std::sync::Arc;
 use tokio::runtime::{Handle, Runtime};
@@ -444,6 +445,18 @@ impl Hal {
     /// Delay
     pub fn delay(&self) -> Delay {
         Delay
+    }
+
+    /// Create a 1-Wire bus handle.
+    ///
+    /// The returned [`OneWire`] provides blocking methods for 1-Wire bus operations
+    /// (reset, read, write, search). There is no embedded-hal trait for 1-Wire, so
+    /// this is a custom API.
+    pub fn onewire(&self) -> OneWire {
+        OneWire {
+            gallo: self.gallo.clone(),
+            handle: self.handle.clone(),
+        }
     }
 
     /// Returns true if we are currently inside a tokio async context.
@@ -1482,6 +1495,168 @@ impl From<PicoDeGalloError<AdcError>> for AdcHalError {
     }
 }
 
+/// Error type for 1-Wire HAL operations.
+#[derive(Debug)]
+pub enum OneWireHalError {
+    /// A 1-Wire-specific error from the device firmware.
+    OneWire(OneWireError),
+    /// A USB communication error.
+    Comms(String),
+}
+
+impl core::fmt::Display for OneWireHalError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::OneWire(e) => write!(f, "{e}"),
+            Self::Comms(msg) => write!(f, "communication error: {msg}"),
+        }
+    }
+}
+
+impl std::error::Error for OneWireHalError {}
+
+impl From<PicoDeGalloError<OneWireError>> for OneWireHalError {
+    fn from(e: PicoDeGalloError<OneWireError>) -> Self {
+        match e {
+            PicoDeGalloError::Endpoint(e) => Self::OneWire(e),
+            PicoDeGalloError::Comms(c) => Self::Comms(format!("{c:?}")),
+        }
+    }
+}
+
+/// 1-Wire bus handle backed by PIO hardware on the firmware.
+///
+/// There is no standard embedded-hal trait for 1-Wire. This type provides
+/// blocking methods that mirror the async methods on [`PicoDeGallo`](pico_de_gallo_lib::PicoDeGallo).
+pub struct OneWire {
+    gallo: Arc<Mutex<PicoDeGallo>>,
+    handle: Handle,
+}
+
+impl OneWire {
+    /// Perform a bus reset and detect device presence.
+    ///
+    /// Returns `true` if one or more devices responded with a presence pulse.
+    pub fn reset(&self) -> Result<bool, OneWireHalError> {
+        if Hal::in_async_context() {
+            block_in_place(|| self.handle.block_on(self.reset_inner()))
+        } else {
+            self.handle.block_on(self.reset_inner())
+        }
+    }
+
+    async fn reset_inner(&self) -> Result<bool, OneWireHalError> {
+        self.gallo
+            .lock()
+            .await
+            .onewire_reset()
+            .await
+            .map_err(OneWireHalError::from)
+    }
+
+    /// Read `len` bytes from the 1-Wire bus.
+    pub fn read(&self, len: u16) -> Result<Vec<u8>, OneWireHalError> {
+        if Hal::in_async_context() {
+            block_in_place(|| self.handle.block_on(self.read_inner(len)))
+        } else {
+            self.handle.block_on(self.read_inner(len))
+        }
+    }
+
+    async fn read_inner(&self, len: u16) -> Result<Vec<u8>, OneWireHalError> {
+        self.gallo
+            .lock()
+            .await
+            .onewire_read(len)
+            .await
+            .map_err(OneWireHalError::from)
+    }
+
+    /// Write raw bytes to the 1-Wire bus.
+    pub fn write(&self, data: &[u8]) -> Result<(), OneWireHalError> {
+        if Hal::in_async_context() {
+            block_in_place(|| self.handle.block_on(self.write_inner(data)))
+        } else {
+            self.handle.block_on(self.write_inner(data))
+        }
+    }
+
+    async fn write_inner(&self, data: &[u8]) -> Result<(), OneWireHalError> {
+        self.gallo
+            .lock()
+            .await
+            .onewire_write(data)
+            .await
+            .map_err(OneWireHalError::from)
+    }
+
+    /// Write bytes then apply a strong pullup for parasitic-power devices.
+    pub fn write_pullup(
+        &self,
+        data: &[u8],
+        pullup_duration_ms: u16,
+    ) -> Result<(), OneWireHalError> {
+        if Hal::in_async_context() {
+            block_in_place(|| {
+                self.handle
+                    .block_on(self.write_pullup_inner(data, pullup_duration_ms))
+            })
+        } else {
+            self.handle
+                .block_on(self.write_pullup_inner(data, pullup_duration_ms))
+        }
+    }
+
+    async fn write_pullup_inner(
+        &self,
+        data: &[u8],
+        pullup_duration_ms: u16,
+    ) -> Result<(), OneWireHalError> {
+        self.gallo
+            .lock()
+            .await
+            .onewire_write_pullup(data, pullup_duration_ms)
+            .await
+            .map_err(OneWireHalError::from)
+    }
+
+    /// Start a new ROM search and return the first device address.
+    pub fn search(&self) -> Result<Option<u64>, OneWireHalError> {
+        if Hal::in_async_context() {
+            block_in_place(|| self.handle.block_on(self.search_inner()))
+        } else {
+            self.handle.block_on(self.search_inner())
+        }
+    }
+
+    async fn search_inner(&self) -> Result<Option<u64>, OneWireHalError> {
+        self.gallo
+            .lock()
+            .await
+            .onewire_search()
+            .await
+            .map_err(OneWireHalError::from)
+    }
+
+    /// Continue the current ROM search and return the next device address.
+    pub fn search_next(&self) -> Result<Option<u64>, OneWireHalError> {
+        if Hal::in_async_context() {
+            block_in_place(|| self.handle.block_on(self.search_next_inner()))
+        } else {
+            self.handle.block_on(self.search_next_inner())
+        }
+    }
+
+    async fn search_next_inner(&self) -> Result<Option<u64>, OneWireHalError> {
+        self.gallo
+            .lock()
+            .await
+            .onewire_search_next()
+            .await
+            .map_err(OneWireHalError::from)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1686,6 +1861,30 @@ mod tests {
         match hal_err {
             AdcHalError::Adc(AdcError::Other) => {}
             other => panic!("expected Adc(Other), got {other:?}"),
+        }
+    }
+
+    // --- 1-Wire error tests ---
+
+    #[test]
+    fn onewire_hal_error_display_no_presence() {
+        let err = OneWireHalError::OneWire(OneWireError::NoPresence);
+        assert_eq!(format!("{err}"), "no device present on 1-Wire bus");
+    }
+
+    #[test]
+    fn onewire_hal_error_display_comms() {
+        let err = OneWireHalError::Comms("timeout".into());
+        assert_eq!(format!("{err}"), "communication error: timeout");
+    }
+
+    #[test]
+    fn onewire_hal_error_from_endpoint() {
+        let e: PicoDeGalloError<OneWireError> = PicoDeGalloError::Endpoint(OneWireError::BusError);
+        let hal_err = OneWireHalError::from(e);
+        match hal_err {
+            OneWireHalError::OneWire(OneWireError::BusError) => {}
+            other => panic!("expected OneWire(BusError), got {other:?}"),
         }
     }
 }

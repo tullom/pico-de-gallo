@@ -1,6 +1,6 @@
 //! Command-line interface for the Pico de Gallo USB bridge.
 //!
-//! The `gallo` CLI provides direct access to I2C, SPI, UART, GPIO, and PWM peripherals
+//! The `gallo` CLI provides direct access to I2C, SPI, UART, GPIO, PWM, ADC, and 1-Wire peripherals
 //! connected through a Pico de Gallo device. It is built with
 //! [clap](https://docs.rs/clap) and supports:
 //!
@@ -9,6 +9,7 @@
 //! - **UART**: read, write, flush, and baud rate configuration
 //! - **PWM**: duty cycle control, enable/disable, frequency/phase configuration
 //! - **ADC**: single-shot reads, configuration queries
+//! - **1-Wire**: reset, read, write, strong-pullup write, ROM search
 //! - **GPIO**: read/write pins, edge event monitoring with subscribe/unsubscribe
 //! - **Configuration**: set I2C/SPI/UART bus frequencies and SPI mode
 //! - **Device management**: list connected devices, query firmware version
@@ -205,6 +206,14 @@ enum Commands {
         /// ADC commands
         #[command(subcommand)]
         command: AdcCommands,
+    },
+
+    /// 1-Wire bus access methods
+    #[command(name = "onewire")]
+    OneWire {
+        /// 1-Wire commands
+        #[command(subcommand)]
+        command: OneWireCommands,
     },
 }
 
@@ -501,6 +510,40 @@ enum AdcCommands {
     Info,
 }
 
+#[derive(Subcommand, Debug)]
+enum OneWireCommands {
+    /// Reset the 1-Wire bus and detect device presence
+    Reset,
+
+    /// Read bytes from the 1-Wire bus
+    Read {
+        /// Number of bytes to read
+        #[arg(short, long)]
+        len: u16,
+    },
+
+    /// Write raw bytes to the 1-Wire bus
+    Write {
+        /// Hex-encoded data bytes (e.g., cc44)
+        #[arg(short, long, value_parser(parse_hex_string))]
+        data: Vec<u8>,
+    },
+
+    /// Write bytes with a strong pullup for parasitic-power devices
+    WritePullup {
+        /// Hex-encoded data bytes (e.g., cc44)
+        #[arg(short, long, value_parser(parse_hex_string))]
+        data: Vec<u8>,
+
+        /// Duration of strong pullup in milliseconds
+        #[arg(short = 't', long, default_value_t = 750)]
+        duration: u16,
+    },
+
+    /// Search for all devices on the 1-Wire bus
+    Search,
+}
+
 fn print_data(data: &[u8], format: &OutputFormat) {
     match format {
         OutputFormat::Hex => {
@@ -602,6 +645,13 @@ impl Cli {
             Commands::Adc { command } => match command {
                 AdcCommands::Read { channel } => self.adc_read(*channel).await,
                 AdcCommands::Info => self.adc_get_info().await,
+            },
+            Commands::OneWire { command } => match command {
+                OneWireCommands::Reset => self.onewire_reset().await,
+                OneWireCommands::Read { len } => self.onewire_read(*len).await,
+                OneWireCommands::Write { data } => self.onewire_write(data).await,
+                OneWireCommands::WritePullup { data, duration } => self.onewire_write_pullup(data, *duration).await,
+                OneWireCommands::Search => self.onewire_search().await,
             },
         }
     }
@@ -1117,6 +1167,85 @@ impl Cli {
         println!("  GPIO channels:    {}", info.num_gpio_channels);
         Ok(())
     }
+
+    // ---- 1-Wire methods ----
+
+    async fn onewire_reset(&self) -> Result<()> {
+        let pg = self.connect();
+        let present = pg
+            .onewire_reset()
+            .await
+            .map_err(|e| eyre!("{:?}", e).wrap_err("1-Wire reset failed"))?;
+        if present {
+            println!("Device(s) present on the 1-Wire bus");
+        } else {
+            println!("No device detected on the 1-Wire bus");
+        }
+        Ok(())
+    }
+
+    async fn onewire_read(&self, len: u16) -> Result<()> {
+        let pg = self.connect();
+        let data = pg
+            .onewire_read(len)
+            .await
+            .map_err(|e| eyre!("{:?}", e).wrap_err("1-Wire read failed"))?;
+        print_data(&data, &self.format);
+        Ok(())
+    }
+
+    async fn onewire_write(&self, data: &[u8]) -> Result<()> {
+        let pg = self.connect();
+        pg.onewire_write(data)
+            .await
+            .map_err(|e| eyre!("{:?}", e).wrap_err("1-Wire write failed"))?;
+        println!("Wrote {} byte(s)", data.len());
+        Ok(())
+    }
+
+    async fn onewire_write_pullup(&self, data: &[u8], duration_ms: u16) -> Result<()> {
+        let pg = self.connect();
+        pg.onewire_write_pullup(data, duration_ms)
+            .await
+            .map_err(|e| eyre!("{:?}", e).wrap_err("1-Wire write-pullup failed"))?;
+        println!("Wrote {} byte(s) with {}ms strong pullup", data.len(), duration_ms);
+        Ok(())
+    }
+
+    async fn onewire_search(&self) -> Result<()> {
+        let pg = self.connect();
+
+        let mut rom_ids = Vec::new();
+
+        // First search
+        match pg
+            .onewire_search()
+            .await
+            .map_err(|e| eyre!("{:?}", e).wrap_err("1-Wire search failed"))?
+        {
+            Some(id) => rom_ids.push(id),
+            None => {
+                println!("No devices found on the 1-Wire bus");
+                return Ok(());
+            }
+        }
+
+        // Continue searching
+        while let Some(id) = pg
+            .onewire_search_next()
+            .await
+            .map_err(|e| eyre!("{:?}", e).wrap_err("1-Wire search-next failed"))?
+        {
+            rom_ids.push(id);
+        }
+
+        println!("Found {} device(s):", rom_ids.len());
+        for (i, id) in rom_ids.iter().enumerate() {
+            let family = (*id & 0xFF) as u8;
+            println!("  {}: ROM ID 0x{:016X} (family 0x{:02X})", i + 1, id, family);
+        }
+        Ok(())
+    }
 }
 
 fn parse_byte(s: &str) -> Result<u8, ParseIntError> {
@@ -1136,6 +1265,18 @@ fn parse_i2c_address(s: &str) -> Result<u8, String> {
         return Err(format!("I2C address {s} exceeds 7-bit range (max 0x7F)"));
     }
     Ok(byte)
+}
+
+/// Parse a hex string (e.g., "cc44" or "0xCC44") into a Vec<u8>.
+fn parse_hex_string(s: &str) -> Result<Vec<u8>, String> {
+    let s = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")).unwrap_or(s);
+    if !s.len().is_multiple_of(2) {
+        return Err(format!("hex string must have even length, got {}", s.len()));
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(|e| format!("invalid hex at position {i}: {e}")))
+        .collect()
 }
 
 /// Parse a comma-separated list of bytes, supporting hex and decimal.

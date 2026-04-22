@@ -37,8 +37,8 @@
 
 use futures::executor::block_on;
 use pico_de_gallo_lib::{
-    self as lib, AdcChannel, AdcError, GpioError, I2cError, PicoDeGalloError, PwmError, SpiError,
-    UartError,
+    self as lib, AdcChannel, AdcError, GpioError, I2cError, OneWireError, PicoDeGalloError,
+    PwmError, SpiError, UartError,
 };
 use std::ffi::CStr;
 use std::os::raw::c_char;
@@ -182,6 +182,16 @@ pub enum Status {
     GpioSubscribeFailed = -55,
     /// GPIO unsubscribe failed
     GpioUnsubscribeFailed = -56,
+    /// 1-Wire: no device responded to reset
+    OneWireNoPresence = -57,
+    /// 1-Wire: bus communication error
+    OneWireBusError = -58,
+    /// 1-Wire: read operation failed
+    OneWireReadFailed = -59,
+    /// 1-Wire: write operation failed
+    OneWireWriteFailed = -60,
+    /// 1-Wire: ROM search failed
+    OneWireSearchFailed = -61,
 }
 
 // ----------------------------- Error Mapping Helpers -----------------------------
@@ -247,6 +257,16 @@ fn adc_error_to_status(e: PicoDeGalloError<AdcError>) -> Status {
     match e {
         PicoDeGalloError::Endpoint(AdcError::ConversionFailed) => Status::AdcConversionFailed,
         PicoDeGalloError::Endpoint(AdcError::Other) => Status::AdcReadFailed,
+        PicoDeGalloError::Comms(_) => Status::CommsFailed,
+    }
+}
+
+fn onewire_error_to_status(e: PicoDeGalloError<OneWireError>) -> Status {
+    match e {
+        PicoDeGalloError::Endpoint(OneWireError::NoPresence) => Status::OneWireNoPresence,
+        PicoDeGalloError::Endpoint(OneWireError::BusError) => Status::OneWireBusError,
+        PicoDeGalloError::Endpoint(OneWireError::BufferTooLong) => Status::BufferTooLong,
+        PicoDeGalloError::Endpoint(OneWireError::Other) => Status::OneWireReadFailed,
         PicoDeGalloError::Comms(_) => Status::CommsFailed,
     }
 }
@@ -1738,6 +1758,221 @@ pub unsafe extern "C" fn gallo_adc_get_config(
     }
 }
 
+// ----------------------------- 1-Wire endpoints -----------------------------
+
+#[unsafe(no_mangle)]
+/// gallo_onewire_reset - Perform a 1-Wire bus reset.
+///
+/// On success, `*out_present` is set to `true` if device(s) responded with a
+/// presence pulse, `false` otherwise.
+///
+/// # Safety
+///
+/// Caller must ensure that `gallo` is a valid, opaque pointer to
+/// `PicoDeGallo` returned by `gallo_init()`.
+pub unsafe extern "C" fn gallo_onewire_reset(
+    gallo: *mut PicoDeGallo,
+    out_present: *mut bool,
+) -> Status {
+    if gallo.is_null() {
+        eprintln!("Unexpected NULL context");
+        return Status::Uninitialized;
+    }
+
+    if out_present.is_null() {
+        eprintln!("Unexpected NULL output pointer");
+        return Status::InvalidArgument;
+    }
+
+    let gallo = unsafe { &*gallo };
+    match block_on(gallo.0.onewire_reset()) {
+        Ok(present) => {
+            unsafe {
+                *out_present = present;
+            }
+            Status::Ok
+        }
+        Err(e) => onewire_error_to_status(e),
+    }
+}
+
+#[unsafe(no_mangle)]
+/// gallo_onewire_read - Read bytes from the 1-Wire bus.
+///
+/// Reads up to `len` bytes into `buf`. On success, `*out_len` is the number
+/// of bytes actually read.
+///
+/// # Safety
+///
+/// - `buf` must point to at least `len` writable bytes.
+/// - `out_len` must be a valid writable `u16` pointer.
+pub unsafe extern "C" fn gallo_onewire_read(
+    gallo: *mut PicoDeGallo,
+    buf: *mut u8,
+    len: u16,
+    out_len: *mut u16,
+) -> Status {
+    if gallo.is_null() {
+        eprintln!("Unexpected NULL context");
+        return Status::Uninitialized;
+    }
+
+    if buf.is_null() || out_len.is_null() {
+        eprintln!("Unexpected NULL pointer");
+        return Status::InvalidArgument;
+    }
+
+    let gallo = unsafe { &*gallo };
+    match block_on(gallo.0.onewire_read(len)) {
+        Ok(data) => {
+            let copy_len = data.len().min(len as usize);
+            unsafe {
+                std::ptr::copy_nonoverlapping(data.as_ptr(), buf, copy_len);
+                *out_len = copy_len as u16;
+            }
+            Status::Ok
+        }
+        Err(e) => onewire_error_to_status(e),
+    }
+}
+
+#[unsafe(no_mangle)]
+/// gallo_onewire_write - Write raw bytes to the 1-Wire bus.
+///
+/// # Safety
+///
+/// - `buf` must point to at least `len` readable bytes.
+pub unsafe extern "C" fn gallo_onewire_write(
+    gallo: *mut PicoDeGallo,
+    buf: *const u8,
+    len: u16,
+) -> Status {
+    if gallo.is_null() {
+        eprintln!("Unexpected NULL context");
+        return Status::Uninitialized;
+    }
+
+    if buf.is_null() && len > 0 {
+        eprintln!("Unexpected NULL buffer pointer");
+        return Status::InvalidArgument;
+    }
+
+    let gallo = unsafe { &*gallo };
+    let data = if len > 0 {
+        unsafe { std::slice::from_raw_parts(buf, len as usize) }
+    } else {
+        &[]
+    };
+
+    match block_on(gallo.0.onewire_write(data)) {
+        Ok(()) => Status::Ok,
+        Err(e) => onewire_error_to_status(e),
+    }
+}
+
+#[unsafe(no_mangle)]
+/// gallo_onewire_write_pullup - Write bytes then apply a strong pullup.
+///
+/// After writing `len` bytes from `buf`, the bus is held high for
+/// `pullup_duration_ms` milliseconds to supply power to parasitic-power devices.
+///
+/// # Safety
+///
+/// - `buf` must point to at least `len` readable bytes.
+pub unsafe extern "C" fn gallo_onewire_write_pullup(
+    gallo: *mut PicoDeGallo,
+    buf: *const u8,
+    len: u16,
+    pullup_duration_ms: u16,
+) -> Status {
+    if gallo.is_null() {
+        eprintln!("Unexpected NULL context");
+        return Status::Uninitialized;
+    }
+
+    if buf.is_null() && len > 0 {
+        eprintln!("Unexpected NULL buffer pointer");
+        return Status::InvalidArgument;
+    }
+
+    let gallo = unsafe { &*gallo };
+    let data = if len > 0 {
+        unsafe { std::slice::from_raw_parts(buf, len as usize) }
+    } else {
+        &[]
+    };
+
+    match block_on(gallo.0.onewire_write_pullup(data, pullup_duration_ms)) {
+        Ok(()) => Status::Ok,
+        Err(e) => onewire_error_to_status(e),
+    }
+}
+
+#[unsafe(no_mangle)]
+/// gallo_onewire_search - Search for all devices on the 1-Wire bus.
+///
+/// Discovers up to `max_count` ROM IDs and writes them to `out_rom_ids`.
+/// On success, `*out_count` holds the number of devices found.
+///
+/// # Safety
+///
+/// - `out_rom_ids` must point to at least `max_count` writable `u64` elements.
+/// - `out_count` must be a valid writable `u16` pointer.
+pub unsafe extern "C" fn gallo_onewire_search(
+    gallo: *mut PicoDeGallo,
+    out_rom_ids: *mut u64,
+    max_count: u16,
+    out_count: *mut u16,
+) -> Status {
+    if gallo.is_null() {
+        eprintln!("Unexpected NULL context");
+        return Status::Uninitialized;
+    }
+
+    if out_rom_ids.is_null() || out_count.is_null() {
+        eprintln!("Unexpected NULL pointer");
+        return Status::InvalidArgument;
+    }
+
+    let gallo = unsafe { &*gallo };
+
+    // First search
+    let first = match block_on(gallo.0.onewire_search()) {
+        Ok(Some(id)) => id,
+        Ok(None) => {
+            unsafe {
+                *out_count = 0;
+            }
+            return Status::Ok;
+        }
+        Err(e) => return onewire_error_to_status(e),
+    };
+
+    unsafe {
+        *out_rom_ids = first;
+    }
+    let mut count: u16 = 1;
+
+    // Continue searching
+    while count < max_count {
+        match block_on(gallo.0.onewire_search_next()) {
+            Ok(Some(id)) => {
+                unsafe {
+                    *out_rom_ids.add(count as usize) = id;
+                }
+                count += 1;
+            }
+            Ok(None) => break,
+            Err(e) => return onewire_error_to_status(e),
+        }
+    }
+
+    unsafe {
+        *out_count = count;
+    }
+    Status::Ok
+}
+
 // ----------------------------- Version endpoint -----------------------------
 
 #[unsafe(no_mangle)]
@@ -1926,6 +2161,11 @@ mod tests {
             Status::GpioPinNotMonitored as i32,
             Status::GpioSubscribeFailed as i32,
             Status::GpioUnsubscribeFailed as i32,
+            Status::OneWireNoPresence as i32,
+            Status::OneWireBusError as i32,
+            Status::OneWireReadFailed as i32,
+            Status::OneWireWriteFailed as i32,
+            Status::OneWireSearchFailed as i32,
         ];
         let unique: HashSet<i32> = codes.iter().copied().collect();
         assert_eq!(codes.len(), unique.len(), "duplicate status codes found");
@@ -2392,5 +2632,85 @@ mod tests {
         assert_eq!(Status::GpioPinNotMonitored as i32, -54);
         assert_eq!(Status::GpioSubscribeFailed as i32, -55);
         assert_eq!(Status::GpioUnsubscribeFailed as i32, -56);
+    }
+
+    // ----------------------------- 1-Wire null pointer checks -----------------------------
+
+    #[test]
+    fn onewire_reset_null_device_returns_uninitialized() {
+        let status = unsafe { gallo_onewire_reset(std::ptr::null_mut(), std::ptr::null_mut()) };
+        assert_eq!(status, Status::Uninitialized);
+    }
+
+    #[test]
+    fn onewire_read_null_device_returns_uninitialized() {
+        let status = unsafe {
+            gallo_onewire_read(
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                9,
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(status, Status::Uninitialized);
+    }
+
+    #[test]
+    fn onewire_write_null_device_returns_uninitialized() {
+        let data = [0xCC, 0x44];
+        let status = unsafe { gallo_onewire_write(std::ptr::null_mut(), data.as_ptr(), 2) };
+        assert_eq!(status, Status::Uninitialized);
+    }
+
+    #[test]
+    fn onewire_write_pullup_null_device_returns_uninitialized() {
+        let data = [0xCC, 0x44];
+        let status =
+            unsafe { gallo_onewire_write_pullup(std::ptr::null_mut(), data.as_ptr(), 2, 750) };
+        assert_eq!(status, Status::Uninitialized);
+    }
+
+    #[test]
+    fn onewire_search_null_device_returns_uninitialized() {
+        let status = unsafe {
+            gallo_onewire_search(
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                10,
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(status, Status::Uninitialized);
+    }
+
+    // ----------------------------- 1-Wire error mapping tests -----------------------------
+
+    #[test]
+    fn onewire_error_mapping() {
+        assert_eq!(
+            onewire_error_to_status(PicoDeGalloError::Endpoint(OneWireError::NoPresence)),
+            Status::OneWireNoPresence
+        );
+        assert_eq!(
+            onewire_error_to_status(PicoDeGalloError::Endpoint(OneWireError::BusError)),
+            Status::OneWireBusError
+        );
+        assert_eq!(
+            onewire_error_to_status(PicoDeGalloError::Endpoint(OneWireError::BufferTooLong)),
+            Status::BufferTooLong
+        );
+        assert_eq!(
+            onewire_error_to_status(PicoDeGalloError::Endpoint(OneWireError::Other)),
+            Status::OneWireReadFailed
+        );
+    }
+
+    #[test]
+    fn onewire_status_codes_are_stable() {
+        assert_eq!(Status::OneWireNoPresence as i32, -57);
+        assert_eq!(Status::OneWireBusError as i32, -58);
+        assert_eq!(Status::OneWireReadFailed as i32, -59);
+        assert_eq!(Status::OneWireWriteFailed as i32, -60);
+        assert_eq!(Status::OneWireSearchFailed as i32, -61);
     }
 }

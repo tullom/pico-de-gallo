@@ -25,6 +25,7 @@ Commands:
   uart     UART access methods
   pwm      PWM control methods
   adc      ADC access methods
+  onewire  1-Wire bus access methods
   help     Print this message or the help of the given subcommand(s)
 
 Options:
@@ -288,6 +289,12 @@ endpoints exposed by the firmware. The table below provides a summary.
 | `adc_get_config`             |                                                               | Returns the ADC configuration (resolution, reference, channels)            |
 | `i2c_batch`                  | `address`, `ops` (encoded byte stream)                        | Executes multiple I<sup>2</sup>C operations in a single USB transfer       |
 | `spi_batch`                  | `cs_pin`, `ops` (encoded byte stream)                         | Executes multiple SPI operations atomically under chip-select              |
+| `onewire_reset`              |                                                               | Resets the 1-Wire bus and detects device presence                          |
+| `onewire_read`               | `len`                                                         | Reads N bytes from the 1-Wire bus                                          |
+| `onewire_write`              | `data`                                                        | Writes raw bytes to the 1-Wire bus                                         |
+| `onewire_write_pullup`       | `data`, `pullup_duration_ms`                                  | Writes bytes then applies strong pullup for parasitic-power devices        |
+| `onewire_search`             |                                                               | Starts a new ROM search and returns the first device                       |
+| `onewire_search_next`        |                                                               | Continues the current ROM search                                           |
 
 ## Gallo Hal
 

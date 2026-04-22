@@ -38,6 +38,8 @@
 //!   and their shared error type [`PwmError`].
 //! - **ADC types**: [`AdcReadRequest`], [`AdcChannel`], [`AdcConfigurationInfo`],
 //!   and their shared error type [`AdcError`].
+//! - **1-Wire types**: [`OneWireReadRequest`], [`OneWireWriteRequest`],
+//!   [`OneWireWritePullupRequest`], and their shared error type [`OneWireError`].
 //! - **Batch types**: [`I2cBatchRequest`], [`I2cBatchError`], [`I2cBatchOp`],
 //!   [`SpiBatchRequest`], [`SpiBatchError`], [`SpiBatchOp`], encoding helpers
 //!   [`encode_i2c_batch_ops`], [`encode_spi_batch_ops`], and response-length
@@ -192,6 +194,30 @@ pub type AdcReadResponse = Result<u16, AdcError>;
 /// Response type for ADC get-configuration queries.
 pub type AdcGetConfigurationResponse = AdcConfigurationInfo;
 
+/// Response type for 1-Wire reset operations.
+/// Returns `true` if at least one device is present on the bus.
+pub type OneWireResetResponse = Result<bool, OneWireError>;
+
+/// Response type for 1-Wire read operations.
+/// On the host (`use-std`), returns `Vec<u8>`; on firmware, returns `&[u8]`.
+#[cfg(feature = "use-std")]
+pub type OneWireReadResponse<'a> = Result<Vec<u8>, OneWireError>;
+/// Response type for 1-Wire read operations.
+/// On the host (`use-std`), returns `Vec<u8>`; on firmware, returns `&[u8]`.
+#[cfg(not(feature = "use-std"))]
+pub type OneWireReadResponse<'a> = Result<&'a [u8], OneWireError>;
+
+/// Response type for 1-Wire write operations.
+pub type OneWireWriteResponse = Result<(), OneWireError>;
+
+/// Response type for 1-Wire write-with-pullup operations.
+pub type OneWireWritePullupResponse = Result<(), OneWireError>;
+
+/// Response type for 1-Wire ROM search operations.
+/// Returns `Some(rom_id)` for the next device found, or `None` if the
+/// search is complete.
+pub type OneWireSearchResponse = Result<Option<u64>, OneWireError>;
+
 /// Response type for I2C batch transaction operations.
 /// On the host (`use-std`), returns `Vec<u8>` of concatenated read data;
 /// on firmware, returns `&[u8]`.
@@ -256,6 +282,12 @@ endpoints! {
     | GpioUnsubscribe       | GpioUnsubscribeRequest        | GpioUnsubscribeResponse       | "gpio/unsubscribe"   |
     | I2cBatch              | I2cBatchRequest<'a>           | I2cBatchResponse<'b>          | "i2c/batch"          |
     | SpiBatch              | SpiBatchRequest<'a>           | SpiBatchResponse<'b>          | "spi/batch"          |
+    | OneWireReset          | ()                            | OneWireResetResponse          | "onewire/reset"      |
+    | OneWireRead           | OneWireReadRequest            | OneWireReadResponse<'a>       | "onewire/read"       |
+    | OneWireWrite          | OneWireWriteRequest<'a>       | OneWireWriteResponse          | "onewire/write"      |
+    | OneWireWritePullup    | OneWireWritePullupRequest<'a> | OneWireWritePullupResponse    | "onewire/write-pullup" |
+    | OneWireSearch         | ()                            | OneWireSearchResponse         | "onewire/search"     |
+    | OneWireSearchNext     | ()                            | OneWireSearchResponse         | "onewire/search-next" |
     | Version               | ()                            | VersionInfo                   | "version"            |
 }
 
@@ -1054,6 +1086,72 @@ pub struct AdcConfigurationInfo {
     pub nominal_reference_mv: u16,
     /// Number of external (GPIO-based) ADC channels.
     pub num_gpio_channels: u8,
+}
+
+// --- 1-Wire
+
+/// Error from 1-Wire operations, propagated from firmware.
+///
+/// # Wire Compatibility
+///
+/// Variants are serialized by **index** (0, 1, 2, …). Do **not** reorder,
+/// rename, or remove existing variants — only append new ones at the end.
+#[derive(Serialize, Deserialize, Schema, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OneWireError {
+    /// No device responded to reset (no presence pulse detected).
+    NoPresence,
+    /// Bus communication error (short circuit, stuck bus, etc.).
+    BusError,
+    /// Requested transfer exceeds [`MAX_TRANSFER_SIZE`].
+    BufferTooLong,
+    /// Catch-all for unexpected 1-Wire errors.
+    Other,
+}
+
+impl core::fmt::Display for OneWireError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::NoPresence => write!(f, "no device present on 1-Wire bus"),
+            Self::BusError => write!(f, "1-Wire bus error"),
+            Self::BufferTooLong => write!(f, "buffer exceeds firmware limit"),
+            Self::Other => write!(f, "1-Wire error"),
+        }
+    }
+}
+
+/// Request to read bytes from the 1-Wire bus.
+///
+/// The firmware reads `len` bytes from the bus after the host has already
+/// issued the appropriate ROM and function commands via [`OneWireWrite`].
+#[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
+pub struct OneWireReadRequest {
+    /// Number of bytes to read (max [`MAX_TRANSFER_SIZE`]).
+    pub len: u16,
+}
+
+/// Request to write bytes to the 1-Wire bus.
+///
+/// Writes raw bytes (ROM commands, function commands, data) to the bus.
+/// The host is responsible for issuing the correct 1-Wire command
+/// sequences (e.g., Skip ROM `0xCC` + Convert T `0x44`).
+#[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
+pub struct OneWireWriteRequest<'a> {
+    /// Bytes to write to the bus.
+    pub data: &'a [u8],
+}
+
+/// Request to write bytes to the 1-Wire bus with strong pullup.
+///
+/// After writing, the firmware drives the data line high for
+/// `pullup_duration_ms` milliseconds to supply parasitic power.
+/// This is required for devices like DS18B20 that draw power from
+/// the data line during temperature conversion.
+#[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
+pub struct OneWireWritePullupRequest<'a> {
+    /// Bytes to write to the bus.
+    pub data: &'a [u8],
+    /// Duration in milliseconds to hold the strong pullup after writing.
+    pub pullup_duration_ms: u16,
 }
 
 // --- Transaction Batching
@@ -2805,5 +2903,147 @@ mod tests {
             kind: SpiError::Other,
         };
         assert_eq!(format!("{err}"), "SPI batch operation 0 failed: SPI error");
+    }
+
+    // --- 1-Wire round-trip tests ---
+
+    #[test]
+    fn onewire_read_request_round_trip() {
+        let req = OneWireReadRequest { len: 9 };
+        let bytes = to_allocvec(&req).unwrap();
+        let decoded: OneWireReadRequest = from_bytes(&bytes).unwrap();
+        assert_eq!(req, decoded);
+    }
+
+    #[test]
+    fn onewire_write_request_round_trip() {
+        let data = [0xCC, 0x44];
+        let req = OneWireWriteRequest { data: &data };
+        let bytes = to_allocvec(&req).unwrap();
+        let decoded: OneWireWriteRequest = from_bytes(&bytes).unwrap();
+        assert_eq!(req, decoded);
+    }
+
+    #[test]
+    fn onewire_write_pullup_request_round_trip() {
+        let data = [0xCC, 0x44];
+        let req = OneWireWritePullupRequest {
+            data: &data,
+            pullup_duration_ms: 750,
+        };
+        let bytes = to_allocvec(&req).unwrap();
+        let decoded: OneWireWritePullupRequest = from_bytes(&bytes).unwrap();
+        assert_eq!(req, decoded);
+    }
+
+    #[test]
+    fn onewire_error_variants_round_trip() {
+        for err in [
+            OneWireError::NoPresence,
+            OneWireError::BusError,
+            OneWireError::BufferTooLong,
+            OneWireError::Other,
+        ] {
+            let bytes = to_allocvec(&err).unwrap();
+            let decoded: OneWireError = from_bytes(&bytes).unwrap();
+            assert_eq!(err, decoded);
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "use-std")]
+    fn onewire_error_display() {
+        assert_eq!(
+            format!("{}", OneWireError::NoPresence),
+            "no device present on 1-Wire bus"
+        );
+        assert_eq!(format!("{}", OneWireError::BusError), "1-Wire bus error");
+        assert_eq!(
+            format!("{}", OneWireError::BufferTooLong),
+            "buffer exceeds firmware limit"
+        );
+        assert_eq!(format!("{}", OneWireError::Other), "1-Wire error");
+    }
+
+    #[test]
+    fn onewire_error_discriminants_are_stable() {
+        assert_eq!(to_allocvec(&OneWireError::NoPresence).unwrap(), [0]);
+        assert_eq!(to_allocvec(&OneWireError::BusError).unwrap(), [1]);
+        assert_eq!(to_allocvec(&OneWireError::BufferTooLong).unwrap(), [2]);
+        assert_eq!(to_allocvec(&OneWireError::Other).unwrap(), [3]);
+    }
+
+    #[test]
+    fn onewire_read_request_wire_stability() {
+        let req = OneWireReadRequest { len: 9 };
+        let bytes = to_allocvec(&req).unwrap();
+        let canonical = bytes.clone();
+        let decoded: OneWireReadRequest = from_bytes(&bytes).unwrap();
+        assert_eq!(decoded, req);
+        assert_eq!(to_allocvec(&decoded).unwrap(), canonical);
+    }
+
+    #[test]
+    fn onewire_write_pullup_request_wire_stability() {
+        let data = [0xCC, 0x44];
+        let req = OneWireWritePullupRequest {
+            data: &data,
+            pullup_duration_ms: 750,
+        };
+        let bytes = to_allocvec(&req).unwrap();
+        let canonical = bytes.clone();
+        let decoded: OneWireWritePullupRequest = from_bytes(&bytes).unwrap();
+        assert_eq!(decoded, req);
+        assert_eq!(to_allocvec(&decoded).unwrap(), canonical);
+    }
+
+    #[test]
+    fn onewire_read_request_zero_len() {
+        let req = OneWireReadRequest { len: 0 };
+        let bytes = to_allocvec(&req).unwrap();
+        let decoded: OneWireReadRequest = from_bytes(&bytes).unwrap();
+        assert_eq!(req, decoded);
+    }
+
+    #[test]
+    fn onewire_read_request_max_len() {
+        let req = OneWireReadRequest { len: u16::MAX };
+        let bytes = to_allocvec(&req).unwrap();
+        let decoded: OneWireReadRequest = from_bytes(&bytes).unwrap();
+        assert_eq!(req, decoded);
+    }
+
+    #[test]
+    fn onewire_write_request_empty() {
+        let req = OneWireWriteRequest { data: &[] };
+        let bytes = to_allocvec(&req).unwrap();
+        let decoded: OneWireWriteRequest = from_bytes(&bytes).unwrap();
+        assert_eq!(req, decoded);
+    }
+
+    #[test]
+    fn onewire_search_response_some_round_trip() {
+        let resp: OneWireSearchResponse = Ok(Some(0x0028_FF12_3456_7800));
+        let bytes = to_allocvec(&resp).unwrap();
+        let decoded: OneWireSearchResponse = from_bytes(&bytes).unwrap();
+        assert_eq!(resp, decoded);
+    }
+
+    #[test]
+    fn onewire_search_response_none_round_trip() {
+        let resp: OneWireSearchResponse = Ok(None);
+        let bytes = to_allocvec(&resp).unwrap();
+        let decoded: OneWireSearchResponse = from_bytes(&bytes).unwrap();
+        assert_eq!(resp, decoded);
+    }
+
+    #[test]
+    fn onewire_reset_response_round_trip() {
+        for present in [true, false] {
+            let resp: OneWireResetResponse = Ok(present);
+            let bytes = to_allocvec(&resp).unwrap();
+            let decoded: OneWireResetResponse = from_bytes(&bytes).unwrap();
+            assert_eq!(resp, decoded);
+        }
     }
 }

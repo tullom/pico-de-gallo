@@ -3,7 +3,7 @@
 //! Pico de Gallo firmware for the Raspberry Pi Pico 2 (RP2350).
 //!
 //! This firmware implements a USB bridge that exposes I2C, SPI, UART, GPIO,
-//! and PWM peripherals to a host computer via [postcard-rpc](https://docs.rs/postcard-rpc)
+//! PWM, ADC, and 1-Wire peripherals to a host computer via [postcard-rpc](https://docs.rs/postcard-rpc)
 //! endpoints. It runs on the [Embassy](https://embassy.dev) async runtime.
 //!
 //! # Peripheral Mapping
@@ -22,6 +22,7 @@
 //! | PWM 1    | GPIO 13 | Slice 6 channel B |
 //! | PWM 2    | GPIO 14 | Slice 7 channel A |
 //! | PWM 3    | GPIO 15 | Slice 7 channel B |
+//! | 1-Wire   | GPIO 16 | PIO0/SM0, open-drain |
 //! | ADC 0    | GPIO 26 | 12-bit, 0–3.3 V nominal |
 //! | ADC 1    | GPIO 27 | 12-bit, 0–3.3 V nominal |
 //! | ADC 2    | GPIO 28 | 12-bit, 0–3.3 V nominal |
@@ -48,7 +49,9 @@ use embassy_rp::bind_interrupts;
 use embassy_rp::clocks::ClockConfig;
 use embassy_rp::gpio::{Flex, Level, Pull};
 use embassy_rp::i2c::{self, I2c};
-use embassy_rp::peripherals::{DMA_CH0, DMA_CH1, I2C1, SPI0, UART0, USB};
+use embassy_rp::peripherals::{DMA_CH0, DMA_CH1, I2C1, PIO0, SPI0, UART0, USB};
+use embassy_rp::pio;
+use embassy_rp::pio_programs::onewire::{PioOneWire, PioOneWireProgram, PioOneWireSearch};
 use embassy_rp::pwm::{self, Pwm};
 use embassy_rp::spi::{self, Phase, Polarity, Spi};
 use embassy_rp::uart::{self, BufferedUart};
@@ -76,6 +79,9 @@ use pico_de_gallo_internal::{
     I2cScan, I2cScanRequest, I2cScanResponse, I2cSetConfiguration, I2cSetConfigurationRequest,
     I2cSetConfigurationResponse, I2cWrite, I2cWriteRead, I2cWriteReadRequest, I2cWriteReadResponse, I2cWriteRequest,
     I2cWriteResponse, MAX_BATCH_OPS, MAX_TRANSFER_SIZE, MICROSOFT_VID, NUM_ADC_GPIO_CHANNELS, NUM_PWM_CHANNELS,
+    OneWireError, OneWireRead, OneWireReadRequest, OneWireReadResponse, OneWireReset, OneWireResetResponse,
+    OneWireSearch, OneWireSearchNext, OneWireSearchResponse, OneWireWrite, OneWireWritePullup,
+    OneWireWritePullupRequest, OneWireWritePullupResponse, OneWireWriteRequest, OneWireWriteResponse,
     PICO_DE_GALLO_PID, PingEndpoint, PwmConfigurationInfo, PwmDisable, PwmDisableRequest, PwmDisableResponse,
     PwmDutyCycleInfo, PwmEnable, PwmEnableRequest, PwmEnableResponse, PwmError, PwmGetConfiguration,
     PwmGetConfigurationRequest, PwmGetConfigurationResponse, PwmGetDutyCycle, PwmGetDutyCycleRequest,
@@ -143,6 +149,7 @@ bind_interrupts!(struct Irqs {
     I2C1_IRQ => embassy_rp::i2c::InterruptHandler<I2C1>;
     DMA_IRQ_0 => embassy_rp::dma::InterruptHandler<DMA_CH0>, embassy_rp::dma::InterruptHandler<DMA_CH1>;
     UART0_IRQ => embassy_rp::uart::BufferedInterruptHandler<UART0>;
+    PIO0_IRQ_0 => embassy_rp::pio::InterruptHandler<PIO0>;
 });
 
 const NUM_GPIOS: usize = 4;
@@ -176,10 +183,13 @@ pub struct Context {
     spi_phase: SpiPhase,
     spi_polarity: SpiPolarity,
     uart_baud_rate: u32,
+    onewire: PioOneWire<'static, PIO0, 0>,
+    onewire_search: PioOneWireSearch,
     buf: [u8; MAX_TRANSFER_SIZE],
 }
 
 impl Context {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         i2c: I2c<'static, I2C1, i2c::Async>,
         spi: Spi<'static, SPI0, spi::Async>,
@@ -189,6 +199,7 @@ impl Context {
         pwm_configs: [pwm::Config; NUM_PWM_SLICES],
         adc: Adc<'static, adc::Blocking>,
         adc_channels: [adc::Channel<'static>; NUM_ADC_CHANNELS],
+        onewire: PioOneWire<'static, PIO0, 0>,
     ) -> Self {
         let [g0, g1, g2, g3] = gpios;
         // Defaults match embassy-rp Config::default()
@@ -207,6 +218,8 @@ impl Context {
             spi_phase: SpiPhase::CaptureOnFirstTransition,
             spi_polarity: SpiPolarity::IdleLow,
             uart_baud_rate: 115_200,
+            onewire,
+            onewire_search: PioOneWireSearch::new(),
             buf: [0; MAX_TRANSFER_SIZE],
         }
     }
@@ -455,6 +468,12 @@ define_dispatch! {
         | PwmGetConfiguration  | blocking | pwm_get_config_handler        |
         | AdcRead              | blocking | adc_read_handler              |
         | AdcGetConfiguration  | blocking | adc_get_config_handler        |
+        | OneWireReset         | async    | onewire_reset_handler         |
+        | OneWireRead          | async    | onewire_read_handler          |
+        | OneWireWrite         | async    | onewire_write_handler         |
+        | OneWireWritePullup   | async    | onewire_write_pullup_handler  |
+        | OneWireSearch        | async    | onewire_search_handler        |
+        | OneWireSearchNext    | async    | onewire_search_next_handler   |
         | Version              | async    | version_handler               |
     };
     topics_in: {
@@ -529,7 +548,23 @@ async fn main(spawner: Spawner) {
         adc::Channel::new_pin(p.PIN_29, Pull::None),
     ];
 
-    let context = Context::new(i2c, spi, uart, gpios, pwm_slices, pwm_configs, adc, adc_channels);
+    // 1-Wire — PIO0/SM0 on GPIO16
+    let pio::Pio { mut common, sm0, .. } = pio::Pio::new(p.PIO0, Irqs);
+    static OW_PROGRAM: StaticCell<PioOneWireProgram<'static, PIO0>> = StaticCell::new();
+    let ow_program = OW_PROGRAM.init(PioOneWireProgram::new(&mut common));
+    let onewire = PioOneWire::new(&mut common, sm0, p.PIN_16, ow_program);
+
+    let context = Context::new(
+        i2c,
+        spi,
+        uart,
+        gpios,
+        pwm_slices,
+        pwm_configs,
+        adc,
+        adc_channels,
+        onewire,
+    );
 
     let (device, tx_impl, rx_impl) = STORAGE.init(
         driver,
@@ -1544,6 +1579,88 @@ fn adc_get_config_handler(_context: &mut Context, _header: VarHeader, _req: ()) 
         nominal_reference_mv: ADC_NOMINAL_REFERENCE_MV,
         num_gpio_channels: NUM_ADC_GPIO_CHANNELS as u8,
     }
+}
+
+// ---- 1-Wire handlers ----
+
+/// Handler for `onewire/reset` — performs a bus reset and returns presence detection.
+async fn onewire_reset_handler(context: &mut Context, _header: VarHeader, _req: ()) -> OneWireResetResponse {
+    debug!("onewire reset");
+    let present = context.onewire.reset().await;
+    Ok(present)
+}
+
+/// Handler for `onewire/read` — reads bytes from the 1-Wire bus.
+async fn onewire_read_handler<'a>(
+    context: &'a mut Context,
+    _header: VarHeader,
+    req: OneWireReadRequest,
+) -> OneWireReadResponse<'a> {
+    let len = usize::from(req.len);
+    if len > MAX_TRANSFER_SIZE {
+        warn!("onewire read: requested len {} exceeds buffer", len);
+        return Err(OneWireError::BufferTooLong);
+    }
+
+    debug!("onewire read: len={=usize}", len);
+    let buf = &mut context.buf[..len];
+    context.onewire.read_bytes(buf).await;
+    Ok(&context.buf[..len])
+}
+
+/// Handler for `onewire/write` — writes bytes to the 1-Wire bus.
+async fn onewire_write_handler<'a>(
+    context: &mut Context,
+    _header: VarHeader,
+    req: OneWireWriteRequest<'a>,
+) -> OneWireWriteResponse {
+    if req.data.len() > MAX_TRANSFER_SIZE {
+        warn!("onewire write: data len {} exceeds buffer", req.data.len());
+        return Err(OneWireError::BufferTooLong);
+    }
+
+    debug!("onewire write: len={=usize}", req.data.len());
+    context.onewire.write_bytes(req.data).await;
+    Ok(())
+}
+
+/// Handler for `onewire/write-pullup` — writes bytes then applies strong pullup.
+async fn onewire_write_pullup_handler<'a>(
+    context: &mut Context,
+    _header: VarHeader,
+    req: OneWireWritePullupRequest<'a>,
+) -> OneWireWritePullupResponse {
+    if req.data.len() > MAX_TRANSFER_SIZE {
+        warn!("onewire write-pullup: data len {} exceeds buffer", req.data.len());
+        return Err(OneWireError::BufferTooLong);
+    }
+
+    let duration = Duration::from_millis(u64::from(req.pullup_duration_ms));
+    debug!(
+        "onewire write-pullup: len={=usize} pullup_ms={=u16}",
+        req.data.len(),
+        req.pullup_duration_ms
+    );
+    context.onewire.write_bytes_pullup(req.data, duration).await;
+    Ok(())
+}
+
+/// Handler for `onewire/search` — starts a new ROM search from scratch.
+async fn onewire_search_handler(context: &mut Context, _header: VarHeader, _req: ()) -> OneWireSearchResponse {
+    debug!("onewire search: starting new search");
+    context.onewire_search = PioOneWireSearch::new();
+    let result = context.onewire_search.next(&mut context.onewire).await;
+    Ok(result)
+}
+
+/// Handler for `onewire/search-next` — continues the current ROM search.
+async fn onewire_search_next_handler(context: &mut Context, _header: VarHeader, _req: ()) -> OneWireSearchResponse {
+    debug!("onewire search-next");
+    if context.onewire_search.is_finished() {
+        return Ok(None);
+    }
+    let result = context.onewire_search.next(&mut context.onewire).await;
+    Ok(result)
 }
 
 /// Handler for `version` — returns the firmware version.

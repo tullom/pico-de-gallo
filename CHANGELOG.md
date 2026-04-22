@@ -110,6 +110,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `gallo_adc_get_config`) and 4 status codes (-50 to -53).
 - **app**: `gallo adc` subcommand group with `read` and
   `info` commands.
+- **internal**: 6 1-Wire endpoints (`onewire/reset`, `onewire/read`, `onewire/write`,
+  `onewire/write-pullup`, `onewire/search`, `onewire/search-next`), `OneWireError`
+  enum (4 variants), `OneWireReadRequest`, `OneWireWriteRequest`,
+  `OneWireWritePullupRequest` types. Response type aliases with `use-std` feature
+  gating for `onewire/read`.
+- **firmware**: 1-Wire support via PIO0/SM0 on GPIO 16 using embassy-rp's
+  `PioOneWire` driver. 6 async handlers. ROM search state held in Context.
+- **lib**: `onewire_reset()`, `onewire_read(len)`, `onewire_write(data)`,
+  `onewire_write_pullup(data, duration_ms)`, `onewire_search()`,
+  `onewire_search_next()` methods. Re-exported `OneWireError`.
+- **hal**: `OneWire` handle struct with blocking wrappers. `OneWireHalError` type.
+  `Hal::onewire()` accessor.
+- **ffi**: 5 1-Wire FFI functions (`gallo_onewire_reset`, `gallo_onewire_read`,
+  `gallo_onewire_write`, `gallo_onewire_write_pullup`, `gallo_onewire_search`)
+  and 5 status codes (-57 to -61).
+- **app**: `gallo onewire` subcommand group with `reset`, `read`, `write`,
+  `write-pullup`, and `search` commands.
+- **book**: New "1-Wire Bus" chapter with DS18B20 temperature sensor examples
+  (CLI, Rust, C, HAL).
 - **internal**: 5 UART endpoints (`uart/read`, `uart/write`, `uart/flush`,
   `uart/set-config`, `uart/get-config`), `UartError` enum (7 variants),
   `UartReadRequest`, `UartWriteRequest`, `UartSetConfigurationRequest`, and
