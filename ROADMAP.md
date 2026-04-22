@@ -1,6 +1,6 @@
 # Pico de Gallo — Roadmap to 1.0
 
-> Last updated: 2026-04-21
+> Last updated: 2026-04-22
 
 This document lays out the path to a 1.0 release of the pico-de-gallo
 project. Changes are grouped into phases and listed in ascending order of
@@ -31,7 +31,7 @@ complexity. Each entry explains *what*, *why*, and *what it unlocks*.
 |-------|--------------------|-------|------|----------------|
 | **1** | Polish What Exists | 6     | 6    | ✅ Complete    |
 | **2** | New Protocols      | 6     | 3    | 🟡 In progress |
-| **3** | Advanced Features  | 6     | 3    | 🟡 In progress |
+| **3** | Advanced Features  | 6     | 3    | 🟡 In progress (3.4–3.6 deferred) |
 | **4** | Hardware Rev 2     | 6     | 0    | 🔴 Not started |
 
 ---
@@ -314,7 +314,7 @@ architecture changes.*
 | ☑ | [3.1 GPIO Event Topics](#31-gpio-event-topics-push-notifications) | [#13](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/13) |
 | ☑ | [3.2 Transaction Batching](#32-i2cspi-transaction-batching)       | [#14](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/14) |
 | ☑ | [3.3 1-Wire via PIO](#33-1-wire-support-via-pio)                  | [#15](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/15) |
-| ☑ | [3.4 Protocol Sniffing](#34-protocol-sniffing--logic-capture)     | [#16](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/16) |
+| ⏳ | [3.4 Protocol Sniffing](#34-protocol-sniffing--logic-capture)     | [#16](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/16) — deferred to post-1.0 |
 | ⏳ | [3.5 Config Persistence](#35-configuration-persistence)           | [#17](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/17) — deferred to post-1.0 |
 | ⏳ | [3.6 Multi-Device Host](#36-multi-device-host-support)            | [#18](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/18) — deferred to post-1.0 |
 

@@ -188,7 +188,7 @@ our expectation. Grab the `pico-de-gallo-app` suitable for your host
 Operating System from our
 [Releases](https://github.com/OpenDevicePartnership/pico-de-gallo/releases)
 page. At the time of this writing, the latest version is [Application
-v0.4.0](https://github.com/OpenDevicePartnership/pico-de-gallo/releases/tag/application-v0.4.0). We
+v0.5.0](https://github.com/OpenDevicePartnership/pico-de-gallo/releases/tag/application-v0.5.0). We
 currently support `x86_64` and `Aarch64` for both Windows and Linux,
 and `Aarch64` for macOS.
 
@@ -196,7 +196,7 @@ Once you have the correct binary, run the `version` command:
 
 ```console
 $ gallo version
-Pico de Gallo FW v0.7.0
+Pico de Gallo FW v0.8.0
 ```
 
 Success 🎉. With this completed we can get familiarized with the other
