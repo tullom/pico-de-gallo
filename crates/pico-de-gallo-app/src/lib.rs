@@ -674,15 +674,50 @@ impl Cli {
     async fn version(&self) -> Result<()> {
         let pg = self.connect();
 
-        match pg.version().await {
-            Ok(version) => {
+        // Try the new device/info endpoint first; fall back to legacy version.
+        match pg.device_info().await {
+            Ok(info) => {
                 println!(
                     "Pico de Gallo FW v{}.{}.{}",
-                    version.major, version.minor, version.patch
+                    info.fw_major, info.fw_minor, info.fw_patch
                 );
+                println!(
+                    "Schema v{}.{}.{}",
+                    info.schema_major, info.schema_minor, info.schema_patch
+                );
+                println!("HW revision {}", info.hw_version);
+
+                let cap = info.capabilities;
+                let status = |flag: pico_de_gallo_lib::Capabilities| {
+                    if cap.contains(flag) { "✓" } else { "✗" }
+                };
+                println!(
+                    "Capabilities: I2C {} | SPI {} | UART {} | GPIO {} | PWM {} | ADC {} | 1-Wire {}",
+                    status(pico_de_gallo_lib::Capabilities::I2C),
+                    status(pico_de_gallo_lib::Capabilities::SPI),
+                    status(pico_de_gallo_lib::Capabilities::UART),
+                    status(pico_de_gallo_lib::Capabilities::GPIO),
+                    status(pico_de_gallo_lib::Capabilities::PWM),
+                    status(pico_de_gallo_lib::Capabilities::ADC),
+                    status(pico_de_gallo_lib::Capabilities::ONEWIRE),
+                );
+
                 Ok(())
             }
-            Err(_) => Err(eyre!("Failed to get version")),
+            Err(_) => {
+                // Fall back to legacy version endpoint
+                match pg.version().await {
+                    Ok(version) => {
+                        println!(
+                            "Pico de Gallo FW v{}.{}.{}",
+                            version.major, version.minor, version.patch
+                        );
+                        println!("(legacy firmware — no schema/hw/capabilities info)");
+                        Ok(())
+                    }
+                    Err(_) => Err(eyre!("Failed to get version")),
+                }
+            }
         }
     }
 

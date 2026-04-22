@@ -278,6 +278,8 @@ endpoints exposed by the firmware. The table below provides a summary.
 | `i2c_get_config`             |                                                               | Returns the active I<sup>2</sup>C bus configuration (frequency)              |
 | `spi_get_config`             |                                                               | Returns the active SPI bus configuration (frequency, phase, polarity)        |
 | `version`                    |                                                               | Reads the current Firmware version from *Pico de Gallo*                    |
+| `device_info`                |                                                               | Reads firmware version, schema version, HW revision, and capabilities      |
+| `validate`                   |                                                               | Queries device info and checks schema version compatibility                |
 | `uart_read`                  | `count`, `timeout_ms`                                         | Reads up to `count` bytes from UART with timeout (0 = non-blocking)        |
 | `uart_write`                 | `contents`                                                    | Writes `contents` to the UART transmit buffer                              |
 | `uart_flush`                 |                                                               | Flushes the UART transmit buffer                                           |

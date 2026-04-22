@@ -124,12 +124,9 @@ Every `gallo_*` function (except the lifecycle functions above) returns a
 | `OneWireReadFailed` | −59 | 1-Wire: read failed |
 | `OneWireWriteFailed` | −60 | 1-Wire: write failed |
 | `OneWireSearchFailed` | −61 | 1-Wire: ROM search failed |
-| `CaptureInvalidPin` | −62 | Capture: pin outside valid range |
-| `CaptureInvalidRate` | −63 | Capture: invalid sample rate |
-| `CaptureTooManyChannels` | −64 | Capture: too many channels |
-| `CaptureAlreadyRunning` | −65 | Capture: session already running |
-| `CaptureNotRunning` | −66 | Capture: no session running |
-| `CaptureNoPins` | −67 | Capture: no pins specified |
+| `DeviceInfoFailed` | −62 | Device info query failed |
+| `SchemaMismatch` | −63 | Schema version mismatch |
+| `LegacyFirmware` | −64 | Firmware too old for device info |
 
 ## Function Reference
 
@@ -155,6 +152,43 @@ Status gallo_version(PicoDeGallo *gallo,
 
 Queries the firmware version and writes the semver components to the output
 pointers.
+
+### Device Info
+
+```c
+typedef struct {
+    uint16_t fw_major;
+    uint16_t fw_minor;
+    uint32_t fw_patch;
+    uint16_t schema_major;
+    uint16_t schema_minor;
+    uint32_t schema_patch;
+    uint8_t  hw_version;
+    uint64_t capabilities;
+} GalloDeviceInfo;
+
+#define GALLO_CAP_I2C     ((uint64_t)1 << 0)
+#define GALLO_CAP_SPI     ((uint64_t)1 << 1)
+#define GALLO_CAP_UART    ((uint64_t)1 << 2)
+#define GALLO_CAP_GPIO    ((uint64_t)1 << 3)
+#define GALLO_CAP_PWM     ((uint64_t)1 << 4)
+#define GALLO_CAP_ADC     ((uint64_t)1 << 5)
+#define GALLO_CAP_ONEWIRE ((uint64_t)1 << 6)
+
+Status gallo_get_device_info(PicoDeGallo *gallo, GalloDeviceInfo *info);
+```
+
+Queries the device for firmware version, schema version, hardware revision, and
+peripheral capabilities. The `capabilities` field is a bitfield — test individual
+peripherals with bitwise AND and the `GALLO_CAP_*` constants:
+
+```c
+if (info.capabilities & GALLO_CAP_I2C) { /* I2C available */ }
+```
+
+Returns `SchemaMismatch` (−63) if the firmware's schema
+version is incompatible with the library, or `LegacyFirmware` (−64) if the
+firmware does not support the `device/info` endpoint.
 
 ### I2C
 
@@ -454,6 +488,17 @@ int main(void) {
     s = gallo_version((PicoDeGallo *)gallo, &major, &minor, &patch);
     if (s == Ok) {
         printf("Firmware v%u.%u.%u\n", major, minor, patch);
+    }
+
+    /* Query device info (schema version, HW revision, capabilities) */
+    GalloDeviceInfo info;
+    s = gallo_get_device_info((PicoDeGallo *)gallo, &info);
+    if (s == Ok) {
+        printf("Schema v%u.%u.%u, HW rev %u\n",
+               info.schema_major, info.schema_minor,
+               info.schema_patch, info.hw_version);
+    } else if (s == SchemaMismatch) {
+        fprintf(stderr, "Schema version mismatch — update firmware or library\n");
     }
 
     /* Read 2 bytes from I2C address 0x50 */

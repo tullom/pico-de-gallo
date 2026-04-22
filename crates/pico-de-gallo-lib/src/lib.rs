@@ -47,27 +47,28 @@
 
 pub mod decode;
 
-use nusb::DeviceInfo;
+use nusb::DeviceInfo as NusbDeviceInfo;
 use pico_de_gallo_internal::{
-    AdcGetConfiguration, AdcRead, AdcReadRequest, GpioEventTopic, GpioGet, GpioGetRequest, GpioPut, GpioPutRequest,
-    GpioSetConfiguration, GpioSetConfigurationRequest, GpioSubscribe, GpioSubscribeRequest, GpioUnsubscribe,
-    GpioUnsubscribeRequest, GpioWaitForAny, GpioWaitForFalling, GpioWaitForHigh, GpioWaitForLow, GpioWaitForRising,
-    GpioWaitRequest, I2cBatch, I2cBatchRequest, I2cGetConfiguration, I2cRead, I2cReadRequest, I2cScan, I2cScanRequest,
-    I2cSetConfiguration, I2cSetConfigurationRequest, I2cWrite, I2cWriteRead, I2cWriteReadRequest, I2cWriteRequest,
-    MICROSOFT_VID, OneWireRead, OneWireReadRequest, OneWireReset, OneWireSearch, OneWireSearchNext, OneWireWrite,
-    OneWireWritePullup, OneWireWritePullupRequest, OneWireWriteRequest, PICO_DE_GALLO_PID, PwmDisable,
-    PwmDisableRequest, PwmEnable, PwmEnableRequest, PwmGetConfiguration, PwmGetConfigurationRequest, PwmGetDutyCycle,
-    PwmGetDutyCycleRequest, PwmSetConfiguration, PwmSetConfigurationRequest, PwmSetDutyCycle, PwmSetDutyCycleRequest,
-    SpiBatch, SpiBatchRequest, SpiFlush, SpiGetConfiguration, SpiRead, SpiReadRequest, SpiSetConfiguration,
+    AdcGetConfiguration, AdcRead, AdcReadRequest, GetDeviceInfo, GpioEventTopic, GpioGet, GpioGetRequest, GpioPut,
+    GpioPutRequest, GpioSetConfiguration, GpioSetConfigurationRequest, GpioSubscribe, GpioSubscribeRequest,
+    GpioUnsubscribe, GpioUnsubscribeRequest, GpioWaitForAny, GpioWaitForFalling, GpioWaitForHigh, GpioWaitForLow,
+    GpioWaitForRising, GpioWaitRequest, I2cBatch, I2cBatchRequest, I2cGetConfiguration, I2cRead, I2cReadRequest,
+    I2cScan, I2cScanRequest, I2cSetConfiguration, I2cSetConfigurationRequest, I2cWrite, I2cWriteRead,
+    I2cWriteReadRequest, I2cWriteRequest, MICROSOFT_VID, OneWireRead, OneWireReadRequest, OneWireReset, OneWireSearch,
+    OneWireSearchNext, OneWireWrite, OneWireWritePullup, OneWireWritePullupRequest, OneWireWriteRequest,
+    PICO_DE_GALLO_PID, PwmDisable, PwmDisableRequest, PwmEnable, PwmEnableRequest, PwmGetConfiguration,
+    PwmGetConfigurationRequest, PwmGetDutyCycle, PwmGetDutyCycleRequest, PwmSetConfiguration,
+    PwmSetConfigurationRequest, PwmSetDutyCycle, PwmSetDutyCycleRequest, SCHEMA_VERSION_MINOR, SpiBatch,
+    SpiBatchRequest, SpiFlush, SpiGetConfiguration, SpiRead, SpiReadRequest, SpiSetConfiguration,
     SpiSetConfigurationRequest, SpiTransfer, SpiTransferRequest, SpiWrite, SpiWriteRequest, UartFlush,
     UartGetConfiguration, UartRead, UartReadRequest, UartSetConfiguration, UartSetConfigurationRequest, UartWrite,
     UartWriteRequest, Version,
 };
 
 pub use pico_de_gallo_internal::{
-    AdcChannel, AdcConfigurationInfo, GpioDirection, GpioEdge, GpioEvent, GpioPull, GpioState, I2cBatchOp,
-    I2cFrequency, PwmConfigurationInfo, PwmDutyCycleInfo, SpiBatchOp, SpiConfigurationInfo, SpiPhase, SpiPolarity,
-    UartConfigurationInfo, VersionInfo,
+    AdcChannel, AdcConfigurationInfo, Capabilities, DeviceInfo, GpioDirection, GpioEdge, GpioEvent, GpioPull,
+    GpioState, I2cBatchOp, I2cFrequency, PwmConfigurationInfo, PwmDutyCycleInfo, SpiBatchOp, SpiConfigurationInfo,
+    SpiPhase, SpiPolarity, UartConfigurationInfo, VersionInfo,
 };
 pub use pico_de_gallo_internal::{
     AdcError, GpioError, I2cBatchError, I2cError, OneWireError, PwmError, SpiBatchError, SpiError, UartError,
@@ -145,6 +146,48 @@ impl<E> From<HostErr<WireError>> for PicoDeGalloError<E> {
     }
 }
 
+/// Error returned by [`PicoDeGallo::validate()`] when the connected firmware
+/// is incompatible with this host library.
+#[derive(Debug)]
+pub enum ValidateError {
+    /// Could not communicate with the device (USB disconnect, timeout, etc.).
+    Comms(HostErr<WireError>),
+    /// The firmware does not support the `device/info` endpoint (legacy firmware).
+    LegacyFirmware,
+    /// The schema (wire protocol) version does not match.
+    ///
+    /// The host and firmware were compiled against different versions of
+    /// `pico-de-gallo-internal`. They must be upgraded together.
+    SchemaMismatch {
+        /// Schema minor version expected by this host library.
+        expected_minor: u16,
+        /// Schema minor version reported by the firmware.
+        actual_minor: u16,
+    },
+}
+
+impl core::fmt::Display for ValidateError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Comms(e) => write!(f, "communication error: {e:?}"),
+            Self::LegacyFirmware => write!(
+                f,
+                "firmware does not support the device/info endpoint — upgrade firmware"
+            ),
+            Self::SchemaMismatch {
+                expected_minor,
+                actual_minor,
+            } => write!(
+                f,
+                "schema version mismatch: host expects 0.{expected_minor}.x \
+                 but firmware reports 0.{actual_minor}.x — upgrade both together"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ValidateError {}
+
 /// Async client for a Pico de Gallo USB bridge device.
 ///
 /// This is the primary type for interacting with the hardware. It wraps a
@@ -190,7 +233,7 @@ impl PicoDeGallo {
         })
     }
 
-    fn new_inner<F: FnMut(&DeviceInfo) -> bool>(func: F) -> Self {
+    fn new_inner<F: FnMut(&NusbDeviceInfo) -> bool>(func: F) -> Self {
         let client = HostClient::new_raw_nusb(func, ERROR_PATH, 8, VarSeqKind::Seq2);
         Self { client }
     }
@@ -559,6 +602,49 @@ impl PicoDeGallo {
     /// Get the firmware version from the Pico de Gallo device.
     pub async fn version(&self) -> Result<VersionInfo, PicoDeGalloError<Infallible>> {
         Ok(self.client.send_resp::<Version>(&()).await?)
+    }
+
+    /// Get extended device information including firmware version, schema
+    /// (wire protocol) version, hardware revision, and peripheral capabilities.
+    pub async fn device_info(&self) -> Result<DeviceInfo, PicoDeGalloError<Infallible>> {
+        Ok(self.client.send_resp::<GetDeviceInfo>(&()).await?)
+    }
+
+    /// Validate that the connected firmware is wire-compatible with this
+    /// host library.
+    ///
+    /// Queries the `device/info` endpoint and checks that the schema minor
+    /// version matches (pre-1.0 semver: minor bumps are breaking). Returns
+    /// the [`DeviceInfo`] on success so callers can inspect capabilities
+    /// without an extra round-trip.
+    ///
+    /// # Errors
+    ///
+    /// - [`ValidateError::Comms`] — could not reach the device.
+    /// - [`ValidateError::LegacyFirmware`] — firmware does not support
+    ///   `device/info` (upgrade firmware).
+    /// - [`ValidateError::SchemaMismatch`] — firmware and host disagree on
+    ///   the wire protocol version.
+    pub async fn validate(&self) -> Result<DeviceInfo, ValidateError> {
+        let info = self
+            .client
+            .send_resp::<GetDeviceInfo>(&())
+            .await
+            .map_err(|e| match &e {
+                HostErr::Closed => ValidateError::Comms(e),
+                _ => ValidateError::LegacyFirmware,
+            })?;
+
+        // Pre-1.0: minor version must match (0.x bumps are breaking).
+        // Post-1.0: switch to major version matching.
+        if info.schema_minor != SCHEMA_VERSION_MINOR {
+            return Err(ValidateError::SchemaMismatch {
+                expected_minor: SCHEMA_VERSION_MINOR,
+                actual_minor: info.schema_minor,
+            });
+        }
+
+        Ok(info)
     }
 
     /// Query the current I2C bus configuration.

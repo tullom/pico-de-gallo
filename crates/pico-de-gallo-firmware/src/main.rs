@@ -95,6 +95,9 @@ use pico_de_gallo_internal::{
     UartReadResponse, UartSetConfiguration, UartSetConfigurationRequest, UartSetConfigurationResponse, UartWrite,
     UartWriteRequest, UartWriteResponse, Version, VersionInfo,
 };
+use pico_de_gallo_internal::{
+    Capabilities, DeviceInfo, GetDeviceInfo, SCHEMA_VERSION_MAJOR, SCHEMA_VERSION_MINOR, SCHEMA_VERSION_PATCH,
+};
 use postcard_rpc::{
     define_dispatch,
     header::VarHeader,
@@ -475,6 +478,7 @@ define_dispatch! {
         | OneWireSearch        | async    | onewire_search_handler        |
         | OneWireSearchNext    | async    | onewire_search_next_handler   |
         | Version              | async    | version_handler               |
+        | GetDeviceInfo        | blocking | device_info_handler           |
     };
     topics_in: {
         list: TOPICS_IN_LIST;
@@ -1669,5 +1673,29 @@ async fn version_handler(_context: &mut Context, _header: VarHeader, _req: ()) -
         major: VERSION_MAJOR,
         minor: VERSION_MINOR,
         patch: VERSION_PATCH,
+    }
+}
+
+/// Hardware revision. Bump when the physical board layout changes.
+const HW_VERSION: u8 = 1;
+
+/// Handler for `device/info` — returns firmware version, schema version,
+/// hardware version, and peripheral capabilities.
+fn device_info_handler(_context: &mut Context, _header: VarHeader, _req: ()) -> DeviceInfo {
+    DeviceInfo {
+        fw_major: VERSION_MAJOR,
+        fw_minor: VERSION_MINOR,
+        fw_patch: VERSION_PATCH,
+        schema_major: SCHEMA_VERSION_MAJOR,
+        schema_minor: SCHEMA_VERSION_MINOR,
+        schema_patch: SCHEMA_VERSION_PATCH,
+        hw_version: HW_VERSION,
+        capabilities: Capabilities::I2C
+            | Capabilities::SPI
+            | Capabilities::UART
+            | Capabilities::GPIO
+            | Capabilities::PWM
+            | Capabilities::ADC
+            | Capabilities::ONEWIRE,
     }
 }

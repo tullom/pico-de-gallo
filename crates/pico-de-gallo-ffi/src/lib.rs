@@ -192,6 +192,12 @@ pub enum Status {
     OneWireWriteFailed = -60,
     /// 1-Wire: ROM search failed
     OneWireSearchFailed = -61,
+    /// Device info query failed
+    DeviceInfoFailed = -62,
+    /// Schema version mismatch between host and firmware
+    SchemaMismatch = -63,
+    /// Firmware does not support the device/info endpoint
+    LegacyFirmware = -64,
 }
 
 // ----------------------------- Error Mapping Helpers -----------------------------
@@ -2024,6 +2030,113 @@ pub unsafe extern "C" fn gallo_version(
     }
 }
 
+// ----------------------------- Device Info endpoint -----------------------------
+
+/// I2C bus support (bit 0).
+pub const GALLO_CAP_I2C: u64 = 1 << 0;
+/// SPI bus support (bit 1).
+pub const GALLO_CAP_SPI: u64 = 1 << 1;
+/// UART support (bit 2).
+pub const GALLO_CAP_UART: u64 = 1 << 2;
+/// GPIO support (bit 3).
+pub const GALLO_CAP_GPIO: u64 = 1 << 3;
+/// PWM output support (bit 4).
+pub const GALLO_CAP_PWM: u64 = 1 << 4;
+/// ADC input support (bit 5).
+pub const GALLO_CAP_ADC: u64 = 1 << 5;
+/// 1-Wire bus support (bit 6).
+pub const GALLO_CAP_ONEWIRE: u64 = 1 << 6;
+
+/// C-compatible device information struct.
+///
+/// Populated by [`gallo_get_device_info`]. Contains firmware version,
+/// schema (wire protocol) version, hardware revision, and peripheral
+/// capabilities as a `u64` bitfield.
+///
+/// Test individual capabilities with bitwise AND:
+///
+/// ```c
+/// if (info.capabilities & GALLO_CAP_I2C) { /* I2C supported */ }
+/// ```
+#[repr(C)]
+#[derive(Debug)]
+pub struct GalloDeviceInfo {
+    /// Firmware version — major.
+    pub fw_major: u16,
+    /// Firmware version — minor.
+    pub fw_minor: u16,
+    /// Firmware version — patch.
+    pub fw_patch: u32,
+    /// Schema (wire protocol) version — major.
+    pub schema_major: u16,
+    /// Schema (wire protocol) version — minor.
+    pub schema_minor: u16,
+    /// Schema (wire protocol) version — patch.
+    pub schema_patch: u32,
+    /// Hardware revision number.
+    pub hw_version: u8,
+    /// Peripheral capabilities bitfield.
+    ///
+    /// Each bit represents a peripheral; use the `GALLO_CAP_*` constants
+    /// to test individual capabilities.
+    pub capabilities: u64,
+}
+
+#[unsafe(no_mangle)]
+/// gallo_get_device_info - Gets extended device information.
+///
+/// Queries firmware version, schema version, hardware revision, and
+/// peripheral capabilities in a single call. Also validates that the
+/// schema version is compatible with this host library.
+///
+/// Returns `Status::Ok` on success, `Status::SchemaMismatch` if the
+/// firmware's wire protocol is incompatible, `Status::LegacyFirmware`
+/// if the firmware does not support this endpoint, or
+/// `Status::DeviceInfoFailed` on communication error.
+///
+/// # Safety
+///
+/// Caller must ensure that `gallo` is a valid, opaque pointer to
+/// `PicoDeGallo` returned by `gallo_init()`, and `out` points to a
+/// valid `GalloDeviceInfo`.
+pub unsafe extern "C" fn gallo_get_device_info(
+    gallo: *mut PicoDeGallo,
+    out: *mut GalloDeviceInfo,
+) -> Status {
+    if gallo.is_null() {
+        eprintln!("Unexpected NULL context");
+        return Status::Uninitialized;
+    }
+
+    if out.is_null() {
+        eprintln!("Unexpected NULL device info pointer");
+        return Status::InvalidArgument;
+    }
+
+    let gallo = unsafe { &*gallo };
+
+    let result = block_on(gallo.0.validate());
+
+    match result {
+        Ok(info) => {
+            unsafe {
+                (*out).fw_major = info.fw_major;
+                (*out).fw_minor = info.fw_minor;
+                (*out).fw_patch = info.fw_patch;
+                (*out).schema_major = info.schema_major;
+                (*out).schema_minor = info.schema_minor;
+                (*out).schema_patch = info.schema_patch;
+                (*out).hw_version = info.hw_version;
+                (*out).capabilities = info.capabilities.bits();
+            }
+            Status::Ok
+        }
+        Err(lib::ValidateError::SchemaMismatch { .. }) => Status::SchemaMismatch,
+        Err(lib::ValidateError::LegacyFirmware) => Status::LegacyFirmware,
+        Err(lib::ValidateError::Comms(_)) => Status::DeviceInfoFailed,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2095,6 +2208,14 @@ mod tests {
             Status::GpioPinNotMonitored as i32,
             Status::GpioSubscribeFailed as i32,
             Status::GpioUnsubscribeFailed as i32,
+            Status::OneWireNoPresence as i32,
+            Status::OneWireBusError as i32,
+            Status::OneWireReadFailed as i32,
+            Status::OneWireWriteFailed as i32,
+            Status::OneWireSearchFailed as i32,
+            Status::DeviceInfoFailed as i32,
+            Status::SchemaMismatch as i32,
+            Status::LegacyFirmware as i32,
         ];
         for code in error_codes {
             assert!(code < 0, "error code {code} should be negative");
@@ -2166,6 +2287,9 @@ mod tests {
             Status::OneWireReadFailed as i32,
             Status::OneWireWriteFailed as i32,
             Status::OneWireSearchFailed as i32,
+            Status::DeviceInfoFailed as i32,
+            Status::SchemaMismatch as i32,
+            Status::LegacyFirmware as i32,
         ];
         let unique: HashSet<i32> = codes.iter().copied().collect();
         assert_eq!(codes.len(), unique.len(), "duplicate status codes found");
@@ -2391,6 +2515,20 @@ mod tests {
                 &mut patch as *mut u32,
             )
         };
+        assert_eq!(status, Status::Uninitialized);
+    }
+
+    #[test]
+    fn device_info_null_device_returns_uninitialized() {
+        let mut info = std::mem::MaybeUninit::<GalloDeviceInfo>::uninit();
+        let status = unsafe { gallo_get_device_info(std::ptr::null_mut(), info.as_mut_ptr()) };
+        assert_eq!(status, Status::Uninitialized);
+    }
+
+    #[test]
+    fn device_info_null_out_returns_invalid_argument() {
+        // gallo is null too, so Uninitialized fires first
+        let status = unsafe { gallo_get_device_info(std::ptr::null_mut(), std::ptr::null_mut()) };
         assert_eq!(status, Status::Uninitialized);
     }
 
@@ -2712,5 +2850,8 @@ mod tests {
         assert_eq!(Status::OneWireReadFailed as i32, -59);
         assert_eq!(Status::OneWireWriteFailed as i32, -60);
         assert_eq!(Status::OneWireSearchFailed as i32, -61);
+        assert_eq!(Status::DeviceInfoFailed as i32, -62);
+        assert_eq!(Status::SchemaMismatch as i32, -63);
+        assert_eq!(Status::LegacyFirmware as i32, -64);
     }
 }

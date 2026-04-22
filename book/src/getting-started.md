@@ -197,6 +197,9 @@ Once you have the correct binary, run the `version` command:
 ```console
 $ gallo version
 Pico de Gallo FW v0.8.0
+Schema v0.4.0
+HW revision 1
+Capabilities: I2C ✓ | SPI ✓ | UART ✓ | GPIO ✓ | PWM ✓ | ADC ✓ | 1-Wire ✓
 ```
 
 Success 🎉. With this completed we can get familiarized with the other

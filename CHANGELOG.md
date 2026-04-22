@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **internal**: `GetDeviceInfo` endpoint (`"device/info"`), `DeviceInfo` struct,
+  `Capabilities` bitflag newtype (`u64`) with named constants (`I2C`, `SPI`,
+  `UART`, `GPIO`, `PWM`, `ADC`, `ONEWIRE`). Schema version constants
+  auto-generated from `Cargo.toml` via `build.rs`.
+- **firmware**: `device_info_handler` returning firmware version, schema version,
+  hardware revision, and capabilities bitfield.
+- **lib**: `device_info()` and `validate()` methods, `ValidateError` enum.
+  Re-exported `Capabilities` and `DeviceInfo`.
+- **ffi**: `gallo_get_device_info()` function, `GalloDeviceInfo` C struct with
+  `capabilities` u64 bitfield, `GALLO_CAP_*` constants. 3 new status codes:
+  `DeviceInfoFailed` (−62), `SchemaMismatch` (−63), `LegacyFirmware` (−64).
+- **app**: `gallo version` now shows schema version, HW revision, and
+  capabilities with graceful fallback for legacy firmware.
+- **book**: Updated FFI docs with device info section and C constants.
+
 ## [0.8.0] — 2026-04-22
 
 **Crate versions:** internal 0.4.0, lib 0.4.0, hal 0.4.0, ffi 0.5.0, app 0.5.0, firmware 0.8.0

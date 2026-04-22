@@ -51,12 +51,16 @@
 //!   [`GpioDirection`], [`GpioPull`], [`SpiConfigurationInfo`],
 //!   [`UartConfigurationInfo`].
 //! - **Version**: [`VersionInfo`].
+//! - **Device Info**: [`DeviceInfo`], [`Capabilities`].
 
 #![cfg_attr(not(feature = "use-std"), no_std)]
 
 use postcard_rpc::{TopicDirection, endpoints, topics};
 use postcard_schema::Schema;
 use serde::{Deserialize, Serialize};
+
+// Auto-generated schema version constants from Cargo.toml
+include!(concat!(env!("OUT_DIR"), "/schema_version.rs"));
 
 /// USB Vendor ID (Microsoft Corporation).
 pub const MICROSOFT_VID: u16 = 0x045e;
@@ -289,6 +293,7 @@ endpoints! {
     | OneWireSearch         | ()                            | OneWireSearchResponse         | "onewire/search"     |
     | OneWireSearchNext     | ()                            | OneWireSearchResponse         | "onewire/search-next" |
     | Version               | ()                            | VersionInfo                   | "version"            |
+    | GetDeviceInfo         | ()                            | DeviceInfo                    | "device/info"        |
 }
 
 topics! {
@@ -1381,6 +1386,99 @@ pub struct VersionInfo {
     pub minor: u16,
     /// Patch version number.
     pub patch: u32,
+}
+
+// --- Device Info
+
+/// Hardware capabilities — a bitflag set describing which peripherals are
+/// available on the connected device.
+///
+/// Each capability is a single bit. New capabilities can be added by
+/// defining new constants without changing the wire format — existing
+/// bits remain stable.
+///
+/// Use [`BitOr`](core::ops::BitOr) to combine flags and
+/// [`contains`](Capabilities::contains) to test them:
+///
+/// ```
+/// use pico_de_gallo_internal::Capabilities;
+///
+/// let caps = Capabilities::I2C | Capabilities::SPI;
+/// assert!(caps.contains(Capabilities::I2C));
+/// assert!(!caps.contains(Capabilities::UART));
+/// ```
+#[derive(Serialize, Deserialize, Schema, Debug, PartialEq, Eq, Clone, Copy)]
+pub struct Capabilities(pub u64);
+
+impl Capabilities {
+    /// No capabilities.
+    pub const NONE: Self = Self(0);
+    /// I2C bus support (bit 0).
+    pub const I2C: Self = Self(1 << 0);
+    /// SPI bus support (bit 1).
+    pub const SPI: Self = Self(1 << 1);
+    /// UART support (bit 2).
+    pub const UART: Self = Self(1 << 2);
+    /// GPIO support (bit 3).
+    pub const GPIO: Self = Self(1 << 3);
+    /// PWM output support (bit 4).
+    pub const PWM: Self = Self(1 << 4);
+    /// ADC input support (bit 5).
+    pub const ADC: Self = Self(1 << 5);
+    /// 1-Wire bus support (bit 6).
+    pub const ONEWIRE: Self = Self(1 << 6);
+
+    /// Returns `true` if all bits in `other` are set in `self`.
+    pub const fn contains(self, other: Self) -> bool {
+        (self.0 & other.0) == other.0
+    }
+
+    /// Returns the raw `u64` bitfield value.
+    pub const fn bits(self) -> u64 {
+        self.0
+    }
+}
+
+impl core::ops::BitOr for Capabilities {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self {
+        Self(self.0 | rhs.0)
+    }
+}
+
+impl core::ops::BitAnd for Capabilities {
+    type Output = Self;
+
+    fn bitand(self, rhs: Self) -> Self {
+        Self(self.0 & rhs.0)
+    }
+}
+
+/// Extended device information including firmware version, schema version,
+/// hardware version, and peripheral capabilities.
+///
+/// This is returned by a separate endpoint from [`VersionInfo`] so that
+/// the existing `version` endpoint remains wire-stable for older hosts
+/// to parse.
+#[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
+pub struct DeviceInfo {
+    /// Firmware version — major.
+    pub fw_major: u16,
+    /// Firmware version — minor.
+    pub fw_minor: u16,
+    /// Firmware version — patch.
+    pub fw_patch: u32,
+    /// Schema (wire protocol) version — major.
+    pub schema_major: u16,
+    /// Schema (wire protocol) version — minor.
+    pub schema_minor: u16,
+    /// Schema (wire protocol) version — patch.
+    pub schema_patch: u32,
+    /// Hardware revision number (1 = original Pico 2 board).
+    pub hw_version: u8,
+    /// Peripheral capabilities of the connected device.
+    pub capabilities: Capabilities,
 }
 
 #[cfg(test)]
@@ -3056,4 +3154,74 @@ mod tests {
     }
 
     // --- Logic Capture Tests ---
+
+    // --- DeviceInfo / Capabilities round-trip tests ---
+
+    #[test]
+    fn capabilities_bitflag_basics() {
+        let caps = Capabilities::I2C | Capabilities::SPI;
+        assert!(caps.contains(Capabilities::I2C));
+        assert!(caps.contains(Capabilities::SPI));
+        assert!(!caps.contains(Capabilities::UART));
+        assert!(!caps.contains(Capabilities::GPIO));
+        assert_eq!(caps.bits(), 0b11);
+    }
+
+    #[test]
+    fn capabilities_none_is_zero() {
+        assert_eq!(Capabilities::NONE.bits(), 0);
+        assert!(!Capabilities::NONE.contains(Capabilities::I2C));
+    }
+
+    #[test]
+    fn capabilities_round_trip() {
+        let caps = Capabilities::I2C
+            | Capabilities::SPI
+            | Capabilities::GPIO
+            | Capabilities::PWM
+            | Capabilities::ADC;
+        let bytes = to_allocvec(&caps).unwrap();
+        let decoded: Capabilities = from_bytes(&bytes).unwrap();
+        assert_eq!(caps, decoded);
+    }
+
+    #[test]
+    fn device_info_round_trip() {
+        let info = DeviceInfo {
+            fw_major: 0,
+            fw_minor: 8,
+            fw_patch: 0,
+            schema_major: 0,
+            schema_minor: 4,
+            schema_patch: 0,
+            hw_version: 1,
+            capabilities: Capabilities::I2C
+                | Capabilities::SPI
+                | Capabilities::UART
+                | Capabilities::GPIO
+                | Capabilities::PWM
+                | Capabilities::ADC
+                | Capabilities::ONEWIRE,
+        };
+        let bytes = to_allocvec(&info).unwrap();
+        let decoded: DeviceInfo = from_bytes(&bytes).unwrap();
+        assert_eq!(info, decoded);
+    }
+
+    #[test]
+    fn device_info_no_capabilities_round_trip() {
+        let info = DeviceInfo {
+            fw_major: 1,
+            fw_minor: 0,
+            fw_patch: 0,
+            schema_major: 1,
+            schema_minor: 0,
+            schema_patch: 0,
+            hw_version: 2,
+            capabilities: Capabilities::NONE,
+        };
+        let bytes = to_allocvec(&info).unwrap();
+        let decoded: DeviceInfo = from_bytes(&bytes).unwrap();
+        assert_eq!(info, decoded);
+    }
 }
