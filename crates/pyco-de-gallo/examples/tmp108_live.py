@@ -149,16 +149,28 @@ def build_view(
         [samples, ewma], width=width, height=height,
     )
 
-    # Overlay the two grids in a single block. Where the EWMA has any
-    # dot in a cell, draw that cell in magenta; otherwise draw the raw
-    # cell in green. Empty cells stay blank.
+    # Overlay the two grids in a single block. A cell may contain dots
+    # from the raw series, the EWMA series, both, or neither. When both
+    # series light up the same cell we draw it in yellow (overlap) so
+    # the viewer can tell the two plots are coincident there. Otherwise
+    # raw is green and EWMA-only is magenta.
     blank = chr(_BRAILLE_BASE)
     graph = Text()
     for raw_row, ewma_row in zip(raw_lines, ewma_lines):
         for raw_ch, ewma_ch in zip(raw_row, ewma_row):
-            if ewma_ch != blank:
+            raw_has = raw_ch != blank
+            ewma_has = ewma_ch != blank
+            if raw_has and ewma_has:
+                # Combine the dot bits from both cells so the overlap
+                # glyph reflects every dot from either series.
+                combined = chr(
+                    _BRAILLE_BASE
+                    | ((ord(raw_ch) - _BRAILLE_BASE) | (ord(ewma_ch) - _BRAILLE_BASE))
+                )
+                graph.append(combined, style="bold yellow")
+            elif ewma_has:
                 graph.append(ewma_ch, style="magenta")
-            elif raw_ch != blank:
+            elif raw_has:
                 graph.append(raw_ch, style="green")
             else:
                 graph.append(" ")
@@ -179,7 +191,8 @@ def build_view(
         title=(
             f"TMP108 @ 0x{TMP108_ADDR:02x} — "
             f"{1.0 / POLL_INTERVAL_S:.1f} Hz   "
-            "[green]raw[/green]   [magenta]ewma[/magenta]"
+            "[green]raw[/green]   [magenta]ewma[/magenta]   "
+            "[bold yellow]overlap[/bold yellow]"
         ),
         subtitle="press q or Ctrl+C to exit",
         border_style="cyan",
