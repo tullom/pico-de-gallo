@@ -67,7 +67,10 @@ fn list_devices() -> PyResult<Vec<DeviceDescription>> {
 #[pyfunction]
 fn open() -> PyResult<PycoDeGallo> {
     let runtime = Runtime::new().map_err(|e| PyRuntimeError::new_err(format!("{e}")))?;
-    let gallo = PicoDeGallo::new();
+    let gallo = {
+        let _guard = runtime.enter();
+        PicoDeGallo::new()
+    };
     Ok(PycoDeGallo {
         inner: gallo,
         runtime,
@@ -88,7 +91,10 @@ fn open() -> PyResult<PycoDeGallo> {
 #[pyfunction]
 fn open_with_serial_number(serial_number: &str) -> PyResult<PycoDeGallo> {
     let runtime = Runtime::new().map_err(|e| PyRuntimeError::new_err(format!("{e}")))?;
-    let gallo = PicoDeGallo::new_with_serial_number(serial_number);
+    let gallo = {
+        let _guard = runtime.enter();
+        PicoDeGallo::new_with_serial_number(serial_number)
+    };
     Ok(PycoDeGallo {
         inner: gallo,
         runtime,
