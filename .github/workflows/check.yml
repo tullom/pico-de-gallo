@@ -30,7 +30,7 @@ jobs:
         toolchain: [stable, beta]
         crate: [pico-de-gallo-app, pico-de-gallo-firmware,
         pico-de-gallo-internal, pico-de-gallo-ffi, pico-de-gallo-hal,
-        pico-de-gallo-lib]
+        pico-de-gallo-lib, pyco-de-gallo]
 
     runs-on: ubuntu-latest
 
@@ -65,7 +65,8 @@ jobs:
         # Get early warning of new lints which are regularly introduced in beta channels.
         toolchain: [stable, beta]
         crate: [pico-de-gallo-app, pico-de-gallo-internal,
-        pico-de-gallo-ffi, pico-de-gallo-hal, pico-de-gallo-lib]
+        pico-de-gallo-ffi, pico-de-gallo-hal, pico-de-gallo-lib,
+        pyco-de-gallo]
 
     steps:
       - uses: actions/checkout@v6
@@ -110,7 +111,8 @@ jobs:
     strategy:
       matrix:
         crate: [pico-de-gallo-app, pico-de-gallo-internal,
-        pico-de-gallo-ffi, pico-de-gallo-hal, pico-de-gallo-lib]
+        pico-de-gallo-ffi, pico-de-gallo-hal, pico-de-gallo-lib,
+        pyco-de-gallo]
 
     steps:
       - uses: actions/checkout@v6
@@ -136,7 +138,8 @@ jobs:
     strategy:
       matrix:
         crate: [pico-de-gallo-app, pico-de-gallo-internal,
-        pico-de-gallo-ffi, pico-de-gallo-hal, pico-de-gallo-lib]
+        pico-de-gallo-ffi, pico-de-gallo-hal, pico-de-gallo-lib,
+        pyco-de-gallo]
 
     steps:
       - uses: actions/checkout@v6
@@ -163,7 +166,8 @@ jobs:
     strategy:
       matrix:
         crate: [pico-de-gallo-internal, pico-de-gallo-ffi,
-        pico-de-gallo-hal, pico-de-gallo-lib, pico-de-gallo-app]
+        pico-de-gallo-hal, pico-de-gallo-lib, pico-de-gallo-app,
+        pyco-de-gallo]
 
     steps:
       - uses: actions/checkout@v6
@@ -189,7 +193,8 @@ jobs:
       matrix:
         msrv: ["1.90"]
         crate: [pico-de-gallo-app, pico-de-gallo-internal,
-        pico-de-gallo-ffi, pico-de-gallo-hal, pico-de-gallo-lib]
+        pico-de-gallo-ffi, pico-de-gallo-hal, pico-de-gallo-lib,
+        pyco-de-gallo]
 
     name: ubuntu / ${{ matrix.msrv }}
 

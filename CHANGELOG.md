@@ -43,6 +43,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **ci**: `nostd.yml` now builds and lints firmware for both `hw-rev1` and
   `hw-rev2`. `release-firmware.yml` produces per-revision release assets
   (`firmware-rev1.uf2`, `firmware-rev2.uf2`).
+- **ci**: `pyco-de-gallo` is now part of the `check.yml` matrix
+  (fmt, clippy, doc, hack, test, msrv) on equal footing with the
+  other host crates.
 
 ### Changed
 
