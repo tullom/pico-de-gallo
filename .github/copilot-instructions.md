@@ -32,29 +32,68 @@ case/                             # 3D-printable enclosure (FreeCAD)
   (`crates/pico-de-gallo-firmware/`) because it targets
   `thumbv8m.main-none-eabihf`. It cannot share a workspace with host
   crates. **Firmware must still compile cleanly and pass clippy.**
+- Firmware has mutually exclusive `hw-rev1` (default) / `hw-rev2`
+  Cargo features. `nostd.yml` builds and lints both. The release
+  workflow produces a separate `.uf2` per revision.
+- Firmware uses **`defmt` only** for logging (over RTT). Do not use
+  `log`, `println!`, or `eprintln!` in firmware code.
 - `pyco-de-gallo` is a **PyO3 cdylib** built with `maturin`. It is
   `publish = false` on crates.io — wheels are published to PyPI via the
-  release workflow.
+  release workflow. It **is** part of `check.yml` (fmt, clippy, doc,
+  hack, test, msrv) on equal footing with the other host crates.
 - All crates use **Rust 2024 edition**
 - MSRV: **1.90**
 
 ## Build & Test Commands
 
-| Task              | Command                                                                                              |
-|-------------------|------------------------------------------------------------------------------------------------------|
-| Host tests (all)  | `cd crates && cargo test`                                                                            |
-| Single crate test | `cargo test -p pico-de-gallo-internal`                                                               |
-| Firmware build    | `cd crates/pico-de-gallo-firmware && cargo build --release --target thumbv8m.main-none-eabihf`       |
-| Firmware clippy   | `cd crates/pico-de-gallo-firmware && cargo clippy --target thumbv8m.main-none-eabihf -- -D warnings` |
-| Host format       | `cd crates && cargo fmt --all`                                                                       |
-| Firmware format   | `cd crates/pico-de-gallo-firmware && cargo fmt`                                                      |
-| Host clippy       | `cd crates && cargo clippy --all-targets -- -D warnings`                                             |
-| Docs (per crate)  | `cargo doc --no-deps --all-features`                                                                 |
-| Python wheel (dev) | `cd crates/pyco-de-gallo && maturin develop --release`                                              |
+CI in `.github/workflows/check.yml` runs each job **per crate**
+(`cd crates/<crate>` then `cargo …`). The workspace-level shortcuts
+work locally, but per-crate failures are what CI actually gates on,
+so reproduce CI by iterating per-crate when something fails.
+
+### Per-crate (matches CI exactly)
+
+| Task                | Command                                                              |
+|---------------------|----------------------------------------------------------------------|
+| Format check        | `cd crates/<crate> && cargo fmt --check`                             |
+| Clippy              | `cd crates/<crate> && cargo clippy --all-targets -- -D warnings`     |
+| Tests               | `cd crates/<crate> && cargo test`                                    |
+| Docs (nightly)      | `cd crates/<crate> && RUSTDOCFLAGS=--cfg docsrs cargo +nightly doc --no-deps --all-features` |
+| Feature powerset    | `cd crates/<crate> && cargo hack --feature-powerset check`           |
+| MSRV check          | `cd crates/<crate> && cargo +1.90 check`                             |
+
+The `check.yml` matrix iterates `pico-de-gallo-{app,internal,ffi,hal,lib}`
+and `pyco-de-gallo` (plus `pico-de-gallo-firmware` for `fmt`). Run the
+appropriate command in each crate to mirror CI.
+
+### Workspace shortcuts (local convenience)
+
+| Task              | Command                                                              |
+|-------------------|----------------------------------------------------------------------|
+| Host tests (all)  | `cd crates && cargo test`                                            |
+| Single crate test | `cargo test -p pico-de-gallo-internal`                               |
+| Host format       | `cd crates && cargo fmt --all`                                       |
+| Host clippy       | `cd crates && cargo clippy --all-targets -- -D warnings`             |
+| Python wheel (dev)| `cd crates/pyco-de-gallo && maturin develop --release`               |
+
+### Firmware (separate workspace, no_std)
+
+| Task               | Command                                                                                                              |
+|--------------------|----------------------------------------------------------------------------------------------------------------------|
+| Build hw-rev1      | `cd crates/pico-de-gallo-firmware && cargo build --release --target thumbv8m.main-none-eabihf`                       |
+| Build hw-rev2      | `cd crates/pico-de-gallo-firmware && cargo build --release --target thumbv8m.main-none-eabihf --no-default-features --features hw-rev2` |
+| Clippy hw-rev1     | `cd crates/pico-de-gallo-firmware && cargo clippy --target thumbv8m.main-none-eabihf -- -D warnings`                 |
+| Clippy hw-rev2     | `cd crates/pico-de-gallo-firmware && cargo clippy --target thumbv8m.main-none-eabihf --no-default-features --features hw-rev2 -- -D warnings` |
+| Format             | `cd crates/pico-de-gallo-firmware && cargo fmt`                                                                      |
+
+The release-mode firmware binary is named `pico-de-gallo-firmware`
+(matches the package and directory name).
 
 **Current test baseline:** ~300 unit tests + 3 doctests across the
 host workspace (the bulk live in `pico-de-gallo-internal` and
-`pico-de-gallo-lib`). `pyco-de-gallo` currently has no Rust-side tests.
+`pico-de-gallo-lib`). `pyco-de-gallo` currently has no Rust-side
+tests, but `cargo test` is gated by CI so any future tests run
+automatically.
 
 > **Note:** `pico-de-gallo-internal` without the `use-std` feature
 > fails on `vec!` macro. Test it via the workspace or with `--features
@@ -81,11 +120,15 @@ Endpoints use the `endpoints!` macro with path strings. Response types
 use `#[cfg(feature = "use-std")]` to switch between `Vec<u8>` (host)
 and `&[u8]` (firmware).
 
-The schema version is tracked by `SCHEMA_VERSION_MINOR` in
-`pico-de-gallo-internal`. Pre-1.0 the **minor** version is treated as
-the breaking-change axis — bump it whenever the wire protocol changes
-(new endpoints, reordered enum variants, changed request/response
-types). `PicoDeGallo::validate()` checks this at runtime.
+The schema version is exposed by the `SCHEMA_VERSION_MAJOR`,
+`SCHEMA_VERSION_MINOR`, and `SCHEMA_VERSION_PATCH` constants in
+`pico-de-gallo-internal`. They are **auto-generated** from the
+crate's `[package].version` by `pico-de-gallo-internal/build.rs` —
+do not edit a constant; bump the crate version. Pre-1.0 the **minor**
+version is the breaking-change axis — bump it whenever the wire
+protocol changes (new endpoints, reordered enum variants, changed
+request/response types). `PicoDeGallo::validate()` checks this at
+runtime.
 
 ### Current Endpoints
 
@@ -202,8 +245,10 @@ types). `PicoDeGallo::validate()` checks this at runtime.
 - FFI tests check null pointers, status code invariants, argument
   validation
 - CLI tests verify clap argument parsing
-- `pyco-de-gallo` is currently exercised by hand from Python; behavior
-  is covered transitively by `pico-de-gallo-lib` tests.
+- `pyco-de-gallo` is exercised in CI via `check.yml` (fmt, clippy,
+  doc, hack, test, msrv) like every other host crate. There are no
+  Rust-side unit tests yet — behavior is covered transitively by
+  `pico-de-gallo-lib` tests and exercised by hand from Python.
 
 ## Documentation Requirements
 
@@ -212,6 +257,9 @@ types). `PicoDeGallo::validate()` checks this at runtime.
 - For `pyco-de-gallo`, doc comments double as Python docstrings — write
   them in a style Python users will actually read.
 - Update `book/` when adding new endpoints or changing CLI behavior
+- Update `CHANGELOG.md` (Keep a Changelog format) for endpoint
+  additions, CLI changes, wire-protocol changes, and any change that
+  alters a release artifact name or path.
 - `README.md` at repo root should reflect the high-level project
   overview
 
@@ -233,8 +281,8 @@ types). `PicoDeGallo::validate()` checks this at runtime.
 
 | Workflow                  | Trigger               | What it does                                              |
 |---------------------------|-----------------------|-----------------------------------------------------------|
-| `check.yml`               | Push to `main`, PRs   | fmt, clippy, doc, hack (feature powerset), test, msrv     |
-| `nostd.yml`               | Push to `main`, PRs   | Firmware compiles for `thumbv8m.main-none-eabihf`         |
+| `check.yml`               | Push to `main`, PRs   | fmt, clippy, doc, hack (feature powerset), test, msrv — runs per-crate over `pico-de-gallo-{app,internal,ffi,hal,lib}` and `pyco-de-gallo` (firmware also covered by `fmt`) |
+| `nostd.yml`               | Push to `main`, PRs   | Firmware compiles + clippy for `thumbv8m.main-none-eabihf`, both `hw-rev1` and `hw-rev2` |
 | `gh-pages.yml`            | Push to `main`        | Builds and deploys the mdBook docs to GitHub Pages        |
 | `release-application.yml` | `application-v*` tags | Builds `gallo` for Linux/Windows/macOS                    |
 | `release-ffi.yml`         | `ffi-v*` tags         | Builds .so/.dll/.dylib + C header                         |
