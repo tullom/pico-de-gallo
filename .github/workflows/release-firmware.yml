@@ -53,9 +53,9 @@ jobs:
 
       - name: Install pico-sdk-tools
         run: |
-          tar -vzxf picotool.tar.gz -C $HOME
-          chmod +x $HOME/picotool/picotool
-          echo "$HOME/picotool" >> $GITHUB_PATH
+          tar -vzxf picotool.tar.gz -C "$HOME"
+          chmod +x "$HOME/picotool/picotool"
+          echo "$HOME/picotool" >> "$GITHUB_PATH"
 
       - name: Checkout repository
         uses: actions/checkout@v6

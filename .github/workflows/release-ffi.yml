@@ -53,7 +53,7 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }} --manifest-path crates/pico-de-gallo-ffi/Cargo.toml
 
       - name: Find generated header
-        run: cp $(find crates/target/ -path '*/pico-de-gallo-ffi-*/out/include/pico_de_gallo.h' | head -1) pico_de_gallo.h
+        run: cp "$(find crates/target/ -path '*/pico-de-gallo-ffi-*/out/include/pico_de_gallo.h' | head -1)" pico_de_gallo.h
 
       - name: Upload library asset
         uses: svenstaro/upload-release-action@v2
