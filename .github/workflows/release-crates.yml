@@ -1,0 +1,66 @@
+name: Publish to crates.io
+
+# Triggered by release-please tags (one tag per crate). Publishes the
+# matching crate to crates.io with `cargo publish --locked`.
+#
+# Dependency-ordering note:
+#   The library crates depend on each other:
+#     internal  ──►  lib  ──►  hal
+#                          └─►  ffi
+#                          └─►  application (gallo)
+#   When release-please cuts a coordinated multi-crate release, all the
+#   tags get pushed at roughly the same time and these jobs run in
+#   parallel. crates.io takes 30-60 seconds to index a new publish, so
+#   downstream publishes (lib/hal/ffi/application) can fail with
+#   "no version of pico-de-gallo-internal X.Y.Z found in registry".
+#   Re-run the failed job once the upstream publish has indexed.
+#
+# Token scope:
+#   CARGO_REGISTRY_TOKEN must have `publish-update` scope, restricted to
+#   the five crate names below. Do not grant `publish-new`; the crates
+#   already exist.
+
+on:
+  push:
+    tags:
+      - "internal-v*"
+      - "library-v*"
+      - "hal-v*"
+      - "ffi-v*"
+      - "application-v*"
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: cargo publish
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Determine crate name from tag
+        id: crate
+        run: |
+          case "${GITHUB_REF_NAME}" in
+            internal-v*)    name="pico-de-gallo-internal" ;;
+            library-v*)     name="pico-de-gallo-lib"      ;;
+            hal-v*)         name="pico-de-gallo-hal"      ;;
+            ffi-v*)         name="pico-de-gallo-ffi"      ;;
+            application-v*) name="gallo"                  ;;
+            *)
+              echo "::error::Unrecognized tag: ${GITHUB_REF_NAME}"
+              exit 1
+              ;;
+          esac
+          echo "name=${name}" >> "$GITHUB_OUTPUT"
+          echo "Publishing crate: ${name}"
+
+      - name: Publish to crates.io
+        working-directory: crates
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p ${{ steps.crate.outputs.name }} --locked
