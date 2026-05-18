@@ -1,0 +1,724 @@
+# AGENTS.md — Pico de Gallo
+
+This file is for AI coding agents (Claude, Codex, Cursor, Cline,
+Aider, Continue, GitHub Copilot, etc.) working in this repository.
+It exists so an agent can come in cold and avoid the same dozen
+mistakes humans have already made.
+
+If you only have time to read one section, read **§4 Hard rules** and
+**§13 Common gotchas**.
+
+---
+
+## 1. What Pico de Gallo is
+
+Pico de Gallo turns a [Raspberry Pi Pico 2](https://www.raspberrypi.com/products/raspberry-pi-pico-2/)
+(RP2350) into a USB-attached protocol bridge: **I²C, SPI, UART, GPIO,
+PWM, ADC, 1-Wire**. The firmware speaks
+[postcard-rpc](https://docs.rs/postcard-rpc) over USB; host code
+(Rust, C, Python, or the `gallo` CLI) calls strongly-typed RPCs and
+gets responses back.
+
+The point is to let you develop and test embedded drivers
+**on your laptop** without cross-compiling and flashing every change.
+That makes the wire protocol the single most important contract in
+the project — see §6.
+
+---
+
+## 2. Repository layout
+
+```text
+.
+├── AGENTS.md                        # ← you are here
+├── README.md, ROADMAP.md, CHANGELOG.md
+├── CONTRIBUTING.md, SECURITY.md, CODE_OF_CONDUCT.md, CODEOWNERS
+├── LICENSE                          # MIT
+├── .gitattributes                   # LF EOL enforcement (see §3)
+├── deny.toml                        # cargo-deny policy
+├── .github/
+│   ├── workflows/                   # CI (check, nostd, gh-pages, release-*)
+│   ├── ISSUE_TEMPLATE/              # Issue forms
+│   ├── DISCUSSION_TEMPLATE/         # Discussion forms
+│   ├── pull_request_template.md
+│   ├── copilot-instructions.md      # Detailed agent reference (read it)
+│   └── RELEASE-PLEASE.md            # release-please playbook
+├── book/                            # mdBook → opendevicepartnership.github.io/pico-de-gallo/
+├── hardware/                        # KiCad landing-board PCB
+├── case/                            # FreeCAD enclosure
+└── crates/
+    ├── Cargo.toml                   # HOST workspace (6 members)
+    ├── Cargo.lock                   # COMMITTED — keep it in sync
+    ├── pico-de-gallo-internal/      # Wire protocol types (postcard-rpc)
+    ├── pico-de-gallo-lib/           # Async host library (nusb + tokio)
+    ├── pico-de-gallo-hal/           # embedded-hal trait impls
+    ├── pico-de-gallo-ffi/           # C FFI (cdylib + cbindgen → pico_de_gallo.h)
+    ├── pico-de-gallo-app/           # CLI — binary name is `gallo`
+    ├── pyco-de-gallo/               # Python bindings (PyO3 + maturin)
+    └── pico-de-gallo-firmware/      # SEPARATE workspace, no_std, RP2350
+        └── Cargo.lock               # ALSO committed — separate from host lock
+```
+
+There are **two** Cargo workspaces. The firmware workspace is
+deliberately separate because it targets `thumbv8m.main-none-eabihf`
+and pulls in no_std-only deps. Do not try to add the firmware to the
+host workspace — it will break.
+
+---
+
+## 3. File and EOL conventions
+
+**All text files use LF line endings.** `.gitattributes` has
+`* text=auto eol=lf` plus explicit overrides for `.rs`, `.toml`,
+`.md`, `.yml`, `.yaml`, `.json`, `.sh`, `.py`, `.h`, `.c`, `.lock`.
+
+Why this matters for agents:
+
+- CRLF in `run:` blocks of GitHub Actions workflows silently breaks
+  `actionlint` and `shellcheck` (`unexpected character $'\r'`).
+- CRLF in source files produces noisy whole-file diffs that drown
+  out the actual change.
+- Git will renormalize on commit, but the working tree may still show
+  CRLF, which trips other tooling.
+
+**What to do whenever you create a file on Windows:**
+
+```powershell
+dos2unix path/to/your/new-file.yml
+```
+
+(`dos2unix` is installed; it's on `PATH` via Strawberry Perl.) On
+Linux/macOS the editor will usually do the right thing, but it costs
+nothing to run `dos2unix` anyway.
+
+`.kicad_*`, `.FCStd`, `.uf2`, `.elf`, `.so`, `.dll`, `.dylib`,
+`.png`, `.pdf`, etc. are marked **binary** — never line-end them.
+
+---
+
+## 4. Hard rules (don't break these)
+
+1. **LF endings on every text file.** Run `dos2unix` if you're not
+   sure. See §3.
+2. **Never reorder enum variants in `pico-de-gallo-internal`.**
+   postcard serializes enums by *variant index*, not discriminant.
+   Reordering is a silent wire-protocol break. See §6.
+3. **Commit `Cargo.lock` alongside any `Cargo.toml` change.** Both
+   workspaces have a committed lock file. CI's `lockfile` job will
+   fail any PR that splits them apart.
+4. **Always pass `--locked` when validating dependency changes.** A
+   bare `cargo build` happily resolves new transitive versions and
+   hides regressions until release day (see §13, embassy-usb-driver
+   0.2.1).
+5. **Firmware logs with `defmt` only.** No `log`, no `println!`, no
+   `eprintln!` — that crate is `no_std`.
+6. **Conventional Commits with a crate scope.** release-please
+   depends on this for versioning, CHANGELOG, and tag generation.
+   See §10.
+7. **AI-assisted commits include `Co-authored-by: Copilot` and
+   `Assisted-by:` trailers; NEVER `Signed-off-by:`.** Only humans
+   may certify the DCO.
+8. **Don't push or force-push without explicit user permission.** If
+   you amend a commit, use `git push --force-with-lease` and only
+   after the user asks for it.
+9. **Don't squash-merge.** Clean history is project policy. Each
+   commit must build cleanly on its own.
+10. **Canonical repository is `OpenDevicePartnership/pico-de-gallo`**
+    (the `upstream` git remote). The `origin` remote on this checkout
+    points at the maintainer's personal fork. All docs, templates,
+    and links should use `OpenDevicePartnership/...`.
+
+---
+
+## 5. Build, lint, test (mirror CI exactly)
+
+CI in `.github/workflows/check.yml` runs each job **per crate** with
+`working-directory: crates/<crate>`. The workspace-level shortcuts
+work locally, but per-crate failures are what CI gates on, so when
+something fails reproduce it per crate.
+
+### 5.1 Host crates
+
+The host matrix is `pico-de-gallo-{app,internal,ffi,hal,lib}` and
+`pyco-de-gallo`.
+
+```bash
+# Per-crate (matches CI):
+cd crates/<crate>
+cargo fmt --check
+cargo clippy --all-targets --locked -- -D warnings
+cargo test --locked
+cargo hack --feature-powerset check
+cargo +1.90 check                    # MSRV
+RUSTDOCFLAGS=--cfg docsrs cargo +nightly doc --no-deps --all-features
+```
+
+```bash
+# Workspace shortcuts (local convenience, not CI):
+cd crates
+cargo fmt --all
+cargo clippy --all-targets --locked -- -D warnings
+cargo test --locked
+cargo check --workspace --locked        # lockfile drift guard
+cargo deny --manifest-path Cargo.toml check
+```
+
+### 5.2 Firmware (separate workspace, no_std)
+
+Two mutually exclusive hardware-revision features: **`hw-rev1`**
+(default) and **`hw-rev2`**. `nostd.yml` builds and lints both. If
+you touch firmware, do the same locally:
+
+```bash
+cd crates/pico-de-gallo-firmware
+
+# hw-rev1 (default)
+cargo fmt --check
+cargo clippy --target thumbv8m.main-none-eabihf -- -D warnings
+cargo build --release --locked --target thumbv8m.main-none-eabihf
+
+# hw-rev2
+cargo clippy --target thumbv8m.main-none-eabihf \
+    --no-default-features --features hw-rev2 -- -D warnings
+cargo build --release --locked --target thumbv8m.main-none-eabihf \
+    --no-default-features --features hw-rev2
+```
+
+The release-mode firmware binary is named `pico-de-gallo-firmware`.
+
+### 5.3 Other CI jobs to be aware of
+
+| Job                | Purpose                                                                                        |
+|--------------------|------------------------------------------------------------------------------------------------|
+| `lockfile`         | `cargo check --locked` in both workspaces — fails if `Cargo.toml` and `Cargo.lock` disagree.   |
+| `semver`           | `cargo-semver-checks` on `pico-de-gallo-internal` (the published wire crate).                  |
+| `deny`             | `cargo-deny check bans licenses sources advisories` in both workspaces.                        |
+| `actionlint`       | Lints every `.github/workflows/*.yml`. CRLF kills it, so does bad matrix syntax.               |
+| `nostd.yml`        | Builds firmware for both `hw-rev1` and `hw-rev2`.                                              |
+
+### 5.4 Full CI workflow catalog
+
+| Workflow                  | Trigger                            | What it does                                                                                                |
+|---------------------------|------------------------------------|-------------------------------------------------------------------------------------------------------------|
+| `check.yml`               | Push to `main`, PRs                | fmt, clippy, doc, hack (feature powerset), test, msrv, **lockfile drift**, **actionlint**, **cargo-deny**, **cargo-semver-checks** |
+| `nostd.yml`               | Push to `main`, PRs                | Firmware compiles + clippy for `thumbv8m.main-none-eabihf`, both `hw-rev1` and `hw-rev2`                    |
+| `gh-pages.yml`            | Push to `main`                     | Builds and deploys the mdBook docs to GitHub Pages                                                          |
+| `release-please.yml`      | Push to `main`                     | Opens / maintains one release PR per crate based on Conventional Commits                                    |
+| `release-application.yml` | `application-v*` tags              | Builds `gallo` for Linux/Windows/macOS                                                                      |
+| `release-ffi.yml`         | `ffi-v*` tags                      | Builds `.so` / `.dll` / `.dylib` + C header                                                                 |
+| `release-firmware.yml`    | `firmware-v*` tags **and PRs**     | Builds `.uf2` and `.elf`. PR runs are **build-only** (skip-upload) so tooling breakage is caught at PR time |
+| `release-hardware.yml`    | `hardware-v*` tags                 | KiCad ERC/DRC, gerbers, schematic PDF                                                                       |
+| `release-pyco.yml`        | `pyco-v*` tags                     | Builds Python wheels (CPython 3.8–3.14, Linux/Win/macOS), attaches to GitHub Release                        |
+| `release-crates.yml`      | `internal-v*`, `library-v*`, `hal-v*`, `ffi-v*`, `application-v*` tags | Publishes the matching crate to crates.io                                       |
+
+### 5.5 Test baseline
+
+About **300 unit tests + 3 doctests** across the host workspace,
+concentrated in `pico-de-gallo-internal` and `pico-de-gallo-lib`.
+`pyco-de-gallo` currently has no Rust-side tests. If you add code,
+add tests next to it; round-trip serialization tests are the norm
+for wire types.
+
+> **Trap:** `pico-de-gallo-internal` without the `use-std` feature
+> fails on the `vec!` macro. Test it via the workspace or with
+> `--features use-std`.
+
+---
+
+## 6. Wire protocol — CRITICAL
+
+All protocol types live in `pico-de-gallo-internal`. The firmware
+and every host crate depend on it. Get this wrong and devices in the
+field stop talking to your new release.
+
+### 6.1 Enum ordering is ABI
+
+postcard serializes enums by **variant index** (0, 1, 2, …), **not**
+by discriminant value. Therefore:
+
+- Never reorder variants in any `#[derive(Serialize, Deserialize)]`
+  enum in `pico-de-gallo-internal`.
+- Adding a new variant is safe **only at the end**.
+- Removing or renaming an existing variant is a breaking change.
+- The relevant enums have `// WARNING: Do not reorder...` comments
+  on them — **preserve those comments**.
+
+### 6.2 Schema version
+
+`pico-de-gallo-internal/build.rs` derives `SCHEMA_VERSION_MAJOR`,
+`SCHEMA_VERSION_MINOR`, `SCHEMA_VERSION_PATCH` from the crate's
+`[package].version`. **Do not edit these constants directly** — bump
+the crate version and let `build.rs` regenerate them.
+
+`PicoDeGallo::validate()` (host side) compares the firmware-reported
+schema version to the host's compiled-in version. Pre-1.0, the
+**minor** version is the breaking-change axis. Bump it whenever:
+
+- you add or remove an endpoint or topic,
+- you change a request/response type,
+- you append a variant to a wire enum (even though append-only is
+  technically non-breaking on the wire, host validation is strict).
+
+### 6.3 Endpoint catalog
+
+If you add, remove, or rename an endpoint, **update this table in the
+same commit**.
+
+| Path                     | Description                                             |
+|--------------------------|---------------------------------------------------------|
+| `"ping"`                 | Echo a u32 (testing)                                    |
+| `"version"`              | Get firmware version                                    |
+| `"device/info"`          | Get firmware version, schema version, capabilities      |
+| `"i2c/read"`             | I²C read                                                |
+| `"i2c/write"`            | I²C write                                               |
+| `"i2c/write-read"`       | I²C write-then-read                                     |
+| `"i2c/scan"`             | Scan I²C bus for responding addresses                   |
+| `"i2c/batch"`            | Execute a batch of I²C operations                       |
+| `"i2c/set-config"`       | Configure I²C (`I2cFrequency` enum)                     |
+| `"i2c/get-config"`       | Query current I²C frequency                             |
+| `"spi/read"`             | SPI read                                                |
+| `"spi/write"`            | SPI write                                               |
+| `"spi/flush"`            | SPI flush                                               |
+| `"spi/transfer"`         | SPI full-duplex transfer                                |
+| `"spi/batch"`            | SPI batch under chip-select (read/write/transfer/delay) |
+| `"spi/set-config"`       | Configure SPI (frequency, phase, polarity)              |
+| `"spi/get-config"`       | Query current SPI configuration                         |
+| `"uart/read"`            | UART read with timeout                                  |
+| `"uart/write"`           | UART write                                              |
+| `"uart/flush"`           | Flush UART TX buffer                                    |
+| `"uart/set-config"`      | Configure UART (baud rate)                              |
+| `"uart/get-config"`      | Query current UART configuration                        |
+| `"gpio/get"`             | Read GPIO pin                                           |
+| `"gpio/put"`             | Set GPIO pin                                            |
+| `"gpio/wait-high"`       | Wait for GPIO high                                      |
+| `"gpio/wait-low"`        | Wait for GPIO low                                       |
+| `"gpio/wait-rising"`     | Wait for rising edge                                    |
+| `"gpio/wait-falling"`    | Wait for falling edge                                   |
+| `"gpio/wait-any"`        | Wait for any edge                                       |
+| `"gpio/set-config"`      | Configure GPIO direction and pull                       |
+| `"gpio/subscribe"`       | Subscribe to push-based GPIO edge events                |
+| `"gpio/unsubscribe"`     | Unsubscribe from GPIO edge events                       |
+| `"pwm/set-duty-cycle"`   | Set raw PWM compare value                               |
+| `"pwm/get-duty-cycle"`   | Query current duty cycle and max                        |
+| `"pwm/enable"`           | Enable PWM slice owning the channel                     |
+| `"pwm/disable"`          | Disable PWM slice owning the channel                    |
+| `"pwm/set-config"`       | Configure PWM frequency / phase-correct                 |
+| `"pwm/get-config"`       | Query PWM configuration                                 |
+| `"adc/read"`             | Single-shot ADC read                                    |
+| `"adc/get-config"`       | Query ADC capabilities                                  |
+| `"onewire/reset"`        | 1-Wire reset + presence detection                       |
+| `"onewire/read"`         | 1-Wire read                                             |
+| `"onewire/write"`        | 1-Wire write                                            |
+| `"onewire/write-pullup"` | 1-Wire write + strong pullup (parasitic power)          |
+| `"onewire/search"`       | Start 1-Wire ROM search                                 |
+| `"onewire/search-next"`  | Continue 1-Wire ROM search                              |
+
+### 6.4 Topics (server → client push)
+
+| Path           | Direction       | Message     | Description                  |
+|----------------|-----------------|-------------|------------------------------|
+| `"gpio/event"` | server → client | `GpioEvent` | Push stream of GPIO edges    |
+
+Endpoints use the `endpoints!` macro with path strings. Response
+types use `#[cfg(feature = "use-std")]` to switch between `Vec<u8>`
+(host) and `&[u8]` (firmware).
+
+### 6.5 Lockstep release rule
+
+A wire-protocol change requires bumping in the **same release cycle**:
+
+1. `pico-de-gallo-internal` (with `feat!` / `BREAKING CHANGE:`),
+2. `pico-de-gallo-firmware` (encodes the new schema version),
+3. `pico-de-gallo-lib`, `pico-de-gallo-hal`, `pico-de-gallo-ffi`,
+   `pico-de-gallo-app`, `pyco-de-gallo` (so every host surface sees
+   the new types).
+
+release-please does **not** know `internal` and `firmware` are
+wire-coupled. That discipline is on you (or your AI agent).
+
+---
+
+## 7. Dependency discipline
+
+### 7.1 The ritual
+
+Whenever you change a `Cargo.toml` (add/remove dep, bump version,
+add/remove a pin):
+
+```bash
+cd <workspace>                       # crates/ or crates/pico-de-gallo-firmware/
+rm -f Cargo.lock
+cargo generate-lockfile
+cargo check --locked                 # confirm it builds
+git add Cargo.toml Cargo.lock
+```
+
+Commit `Cargo.toml` and `Cargo.lock` together. CI fails PRs that
+split them.
+
+### 7.2 Pinned dependency rationale
+
+Every `=X.Y.Z` exact pin in any `Cargo.toml` is listed here with the
+upstream issue/commit and a removal criterion. **If you add a new
+exact pin, add a row here in the same commit.**
+
+| Crate                    | Pin                              | Reason                                                                                                                                                                                                                                | Remove when                                                                                           |
+|--------------------------|----------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------|
+| `pico-de-gallo-firmware` | `embassy-usb-driver = "=0.2.0"`  | `0.2.1` bumped `embedded-io-async` 0.6 → 0.7, which breaks `embassy-usb 0.5.1`'s CDC-ACM `ErrorType` impl (creates two incompatible copies of `embedded-io-async` in the dep graph). `cargo-deny`'s `bans.multiple-versions` will warn. | embassy-usb 0.6 is reachable through postcard-rpc (currently it only ships `embassy-usb-0_5-server`). |
+
+### 7.3 Hard constraints
+
+- `embassy-usb` = **0.5** (postcard-rpc 0.12 requires it; do not bump
+  to 0.6).
+- `embassy-sync` = **0.7.2** (compat lock).
+- `nusb` on **0.1.x** (postcard-rpc dep).
+- `pyo3` on **0.28.x** (via maturin).
+- `embassy-usb-driver` = **=0.2.0** in firmware (see §13).
+
+### 7.4 cargo-deny
+
+`deny.toml` has `bans.multiple-versions = "warn"`. If you introduce
+a duplicate-major in the dep graph (as the embassy-usb-driver 0.2.1
+break did), `deny` will flag it. Take that warning seriously — it
+usually means an inner dep silently bumped a semver-incompatible
+version.
+
+---
+
+## 8. FFI conventions
+
+- **Opaque pointer:** `PicoDeGallo` is opaque. `gallo_init` creates,
+  `gallo_free` destroys.
+- Every function takes `*const PicoDeGallo` as first arg — **null
+  check first.**
+- Status codes are `#[repr(i32)]`. `Ok = 0`; all errors are
+  **negative**.
+- **Status code values are stable C ABI.** Never renumber existing
+  codes; only append new ones.
+- `I2cFrequency` is passed as `u8` (`0 = Standard`, `1 = Fast`,
+  `2 = FastPlus`) with range validation.
+- `pico_de_gallo.h` is generated by cbindgen during build — don't
+  hand-edit it.
+
+---
+
+## 9. Python (pyco-de-gallo) conventions
+
+- Built with **PyO3 + maturin**. `pyproject.toml` declares
+  `requires-python = ">=3.8"`.
+- Module name in Python is `pyco_de_gallo`. Public types are exposed
+  without a `Py` prefix (e.g. `I2cFrequency`, `DeviceInfo`). The
+  internal lib types are imported with a `Lib` prefix
+  (`LibI2cFrequency`, etc.) to avoid collisions.
+- The `PycoDeGallo` class owns a Tokio `Runtime` and `block_on`s the
+  underlying async — Python methods are synchronous.
+- For `#[pyclass]` enums used in `Vec<T>` arguments, derive `Clone`
+  and use `#[pyclass(from_py_object)]`. Without `Clone` PyO3 can't
+  extract them.
+- Every `#[pyfunction]`, `#[pymethods]`, `#[pyclass]` item needs a
+  rustdoc comment — it becomes the Python `__doc__`. Prefer Google
+  style (`Args:`/`Returns:`/`Raises:`) so Sphinx napoleon and
+  Pyright render it well.
+- Errors are converted via `PyRuntimeError::new_err(format!("{e}"))`.
+- `pyco-de-gallo` is `publish = false` on crates.io. Wheels are
+  published to PyPI via the release workflow.
+
+---
+
+## 10. Commit conventions
+
+We use [Conventional Commits](https://www.conventionalcommits.org/)
+with a crate scope. Format:
+
+```text
+<type>(<scope>)<!>: <subject>
+
+<body wrapped at 72 chars, explaining what and why>
+
+<trailers>
+```
+
+- **type:** `feat`, `fix`, `chore`, `docs`, `refactor`, `perf`,
+  `test`, `build`, `ci`, `revert`. Use `!` (or `BREAKING CHANGE:`
+  footer) for breaking changes.
+- **scope:** `internal`, `lib`, `hal`, `ffi`, `application`, `pyco`,
+  `firmware`, or `repo`. Multiple scopes are comma-separated:
+  `feat(internal,firmware): ...`.
+- **subject:** ≤50 chars, capitalized, imperative mood, no trailing
+  period.
+
+Required trailers for AI-assisted commits:
+
+```text
+Assisted-by: GitHub Copilot:claude-opus-4.7
+Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
+```
+
+- The `Assisted-by:` value is `AGENT_NAME:MODEL_VERSION [TOOL …]`.
+  Use the actual model you're running as (verify before composing —
+  don't assume from a previous session).
+- **Never add `Signed-off-by:` on AI-assisted commits.** DCO is for
+  humans.
+- The `Co-authored-by: Copilot <…>` line is required by repo policy
+  for all AI-written commits, even from non-Copilot agents.
+
+Wire-protocol commits **must** be marked breaking (see §6.4).
+
+---
+
+## 11. PR etiquette
+
+- Open a **draft PR first**. Let CI run on it.
+- Don't request review until **all checks are green**, especially
+  `lockfile`, `deny`, `semver`, and `actionlint` — these catch the
+  exact regressions that have bitten this project before.
+- For dep bumps, mention which `Cargo.toml(s)` and `Cargo.lock(s)`
+  are touched. Reviewers expect them in the same commit.
+- Use the PR template (`.github/pull_request_template.md`). It bakes
+  in the wire-protocol and Cargo.lock checklists.
+- Don't squash-merge. Rebase or merge-commit only.
+- `Co-authored-by: Copilot` trailer on every AI-written commit; no
+  `Signed-off-by` on AI commits.
+
+---
+
+## 12. Release process (TL;DR — you usually don't touch this)
+
+Releases are driven by
+[release-please](.github/RELEASE-PLEASE.md), not by hand.
+
+1. Land Conventional Commits on `main`.
+2. release-please opens/maintains one release PR per crate.
+3. Before merging a release PR, refresh `Cargo.lock`:
+   `cargo update --workspace --locked` (host) and
+   `cargo update --locked` (firmware).
+4. Merge the release PR. release-please creates the GitHub Release
+   and tag (e.g. `internal-v0.6.0`). The matching
+   `release-*.yml` workflow fires on the tag and produces binaries.
+
+**Tag prefix glossary** (common typos hurt):
+
+| Crate                    | release-please component | Tag prefix       |
+|--------------------------|--------------------------|------------------|
+| `pico-de-gallo-internal` | `internal`               | `internal-v*`    |
+| `pico-de-gallo-lib`      | `library`                | `library-v*`     |
+| `pico-de-gallo-hal`      | `hal`                    | `hal-v*`         |
+| `pico-de-gallo-ffi`      | `ffi`                    | `ffi-v*`         |
+| `gallo` (CLI)            | `application`            | `application-v*` |
+| `pyco-de-gallo`          | `pyco`                   | `pyco-v*`        |
+| `pico-de-gallo-firmware` | `firmware`               | `firmware-v*`    |
+| KiCad gerbers            | n/a (manual)             | `hardware-v*`    |
+
+Common typos that have bitten us: `lib-v*` (it's `library-v*`),
+`app-v*` (it's `application-v*`), `fw-v*` (it's `firmware-v*`).
+
+If you ever do tag manually: **tag-triggered workflows use the
+workflow YAML as it existed at the tagged commit, not at the tip of
+main.** If you rewrite a release commit, you must delete and
+re-create the tag.
+
+---
+
+## 13. Common gotchas (learn from past pain)
+
+Read this before you commit. Every entry here came from a real
+regression.
+
+### 13.1 CRLF on Windows
+
+You created a file in PowerShell. `actionlint` fails with
+`unexpected character $'\r'`, or `git diff` shows the whole file
+changed. **Fix:** `dos2unix <file>` before committing.
+
+### 13.2 Bare `cargo check` masking deps regressions
+
+`cargo check` (without `--locked`) re-resolves the dependency graph
+and pulls newer transitive versions, hiding upstream breakage. The
+embassy-usb-driver 0.2.1 incident shipped because the agent's local
+check used a stale lockfile and a fresh checkout pulled
+`embedded-io-async` 0.7. **Always use `--locked`** when validating
+dep changes.
+
+### 13.3 Bumping a Cargo.toml without bumping the lock
+
+CI's `lockfile` job will fail and the PR can't merge. **Fix:**
+regenerate the lockfile (`rm -f Cargo.lock && cargo generate-lockfile`)
+and commit both files together.
+
+### 13.4 Reordering enum variants in `pico-de-gallo-internal`
+
+Existing devices in the field can no longer decode messages from new
+hosts (or vice versa). There is **no warning** at build time —
+postcard happily encodes whatever you give it. **Fix:** append-only.
+Bump the schema version (minor pre-1.0). Coordinate firmware + all
+host crates in the same release.
+
+### 13.5 Writing the wrong git-remote URL into docs
+
+`origin` may be a personal fork. The canonical repo is
+**`OpenDevicePartnership/pico-de-gallo`** (= the `upstream` remote
+on this checkout). All issue templates, docs, mdBook links, badges,
+and READMEs should point there.
+
+### 13.6 Forgetting AI attribution trailers
+
+The repo requires `Co-authored-by: Copilot <…>` and `Assisted-by:`
+trailers on AI-written commits. **Never** add `Signed-off-by:` from
+an AI agent.
+
+### 13.7 Using `println!` / `log` in firmware
+
+The firmware is `no_std`. It only has `defmt` (over RTT). Anything
+else won't compile.
+
+### 13.8 Editing `SCHEMA_VERSION_*` constants directly
+
+They're generated by `pico-de-gallo-internal/build.rs` from the
+crate's `[package].version`. **Fix:** bump the crate version.
+
+### 13.9 `elf2uf2-rs 2.2.0` on crates.io is stale
+
+The release CI installs from git or uses picotool. Don't "fix" a
+build by pinning to the crates.io version — it doesn't have
+`--family`. See `.github/copilot-instructions.md` "Known traps" for
+the gory details.
+
+### 13.10 `embassy-usb` bumped to 0.6
+
+postcard-rpc 0.12 only ships `embassy-usb-0_5-server`. Don't bump
+`embassy-usb` past 0.5 until postcard-rpc ships a 0.6 server.
+
+### 13.11 Adding a `Cargo.toml` exact pin without documenting it
+
+Every `=X.Y.Z` pin must be listed in
+`.github/copilot-instructions.md` "Pinned dependency rationale"
+with upstream link and removal criterion. Otherwise the next
+contributor (or you, in three months) can't tell why it's there.
+
+### 13.12 Squash-merging or rewriting clean history
+
+Repo policy is one logical change per commit, each commit builds
+cleanly, no squash-merge. If the user asks you to clean up
+fix-up/typo commits, do it via interactive rebase **before** merge,
+not by squashing on merge.
+
+### 13.13 Force-pushing without permission
+
+Especially over a release commit — that breaks tag-triggered
+workflows (see §12). If you must amend a commit you already pushed,
+ask the user, then use `--force-with-lease`, and re-tag if there
+were tags pointing at the old SHA.
+
+### 13.14 `pico-de-gallo-internal` `cargo test` without `--features use-std`
+
+The `vec!` macro test fails because `alloc::vec!` isn't in scope
+under `#![no_std]`. **Fix:** test via the workspace (`cd crates &&
+cargo test`) or pass `--features use-std`.
+
+### 13.15 PyO3 `Vec<MyPyclassEnum>` without `Clone`
+
+PyO3 cannot extract a `Vec<T>` of `#[pyclass]` enums unless `T:
+Clone` and `from_py_object` is set. **Fix:** `#[derive(Clone)]` +
+`#[pyclass(from_py_object)]`.
+
+### 13.16 Past regressions log
+
+When you fix a new regression, **add a one-line row here** so the
+next agent doesn't repeat it.
+
+| Date       | Trigger                                        | Symptom                                                                        | Fix                                                                                       |
+|------------|------------------------------------------------|--------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------|
+| 2026-05-04 | `embassy-usb-driver 0.2.1` (transitive)        | `EndpointError: embedded_io_async::Error` trait bound fails on firmware build. | Pin `embassy-usb-driver = "=0.2.0"` in firmware Cargo.toml; commit firmware `Cargo.lock`. |
+| 2026-05-04 | `elf2uf2-rs 2.2.0` on crates.io is stale       | Release CI fails: `--family` flag does not exist in published binary.          | Install elf2uf2-rs from git (`cargo install --git … --locked`) or revert to picotool.     |
+| 2026-05-04 | Tag-triggered workflow uses tagged-commit YAML | After force-pushing the release commit, GitHub still ran the old workflow.     | Always re-tag after rewriting a release commit; verify with `git show <tag>:<workflow>`.  |
+
+---
+
+## 14. Testing conventions
+
+- Tests live as `#[cfg(test)] mod tests` inline in each crate's
+  `src/lib.rs`.
+- **Naming:** `type_name_behavior()` (e.g.,
+  `i2c_read_request_round_trip`).
+- Round-trip serialization tests for **every** wire type using
+  `postcard::{from_bytes, to_allocvec}` (requires the `use-std`
+  feature, or run from the workspace).
+- FFI tests check null pointers, status-code invariants, and
+  argument validation.
+- CLI tests verify clap argument parsing.
+- `pyco-de-gallo` has no Rust-side unit tests yet — behavior is
+  covered transitively by `pico-de-gallo-lib` tests and exercised by
+  hand from Python. Adding tests is welcome.
+
+## 15. Documentation requirements
+
+- All public items must have **rustdoc**.
+- Every crate must have crate-level `//!` docs.
+- For `pyco-de-gallo`, doc comments double as Python `__doc__`
+  strings — write them in Google style (`Args:`/`Returns:`/`Raises:`)
+  so Sphinx napoleon and Pyright render them well.
+- Update `book/` when adding new endpoints or changing CLI behavior.
+- Update `CHANGELOG.md` (Keep a Changelog format) for endpoint
+  additions, CLI changes, wire-protocol changes, and any change that
+  alters a release artifact name or path.
+- `README.md` at the repo root reflects the high-level overview;
+  keep it in sync.
+
+## 16. Pre-release checklist (manual tags only)
+
+You usually don't need this — release-please handles releases. But
+if you must cut a tag manually (e.g. `hardware-v*`, or release-please
+is broken):
+
+1. From a clean checkout, run the full preflight:
+   ```bash
+   cd crates && cargo fmt --check && \
+     cargo clippy --all-targets -- -D warnings && \
+     cargo test --locked
+   cd ../pico-de-gallo-firmware && cargo fmt --check && \
+     cargo clippy --target thumbv8m.main-none-eabihf -- -D warnings && \
+     cargo build --release --locked --target thumbv8m.main-none-eabihf
+   ```
+2. Confirm `git tag --points-at HEAD` matches expectation **and**
+   that the workflow YAML at HEAD is the version you want CI to run
+   (see §13.13).
+3. Push the commit first; wait for CI green; **then** push tags.
+
+Verify the tagged-commit workflow with:
+
+```bash
+git --no-pager tag --points-at HEAD
+git --no-pager show <tag>:.github/workflows/release-firmware.yml \
+    | grep -E 'elf2uf2|picotool'
+```
+
+## 17. Where to look next
+
+- **`.github/RELEASE-PLEASE.md`** — release-please playbook.
+- **`CONTRIBUTING.md`** — human-facing contribution guide.
+- **`book/`** — user-facing documentation
+  ([online](https://opendevicepartnership.github.io/pico-de-gallo/)).
+- **`crates/<crate>/src/lib.rs`** — every crate has top-level `//!`
+  docs that summarize its public surface.
+- **`deny.toml`** — dependency policy (advisory ignores, license
+  allow-list, ban rules).
+- **`.github/copilot-instructions.md`** — stub pointing back here.
+
+---
+
+## 18. When in doubt
+
+- **Run CI commands locally before pushing.** Especially `cargo
+  clippy --all-targets --locked -- -D warnings` and `cargo check
+  --locked` per crate.
+- **Ask the user before making destructive or wide-reaching
+  changes** — force-pushes, dependency major bumps,
+  wire-protocol breaks, file deletions outside the immediate task.
+- **Don't fabricate.** If you don't know whether something is
+  pinned, look at the `Cargo.toml`. If you don't know whether an
+  endpoint exists, grep `pico-de-gallo-internal/src/`.
+- **Cite your sources** in commit bodies and PR descriptions.
+  Reference issue numbers, upstream commits, RUSTSEC IDs, datasheet
+  page numbers.
+
+Welcome aboard. 🌶️
