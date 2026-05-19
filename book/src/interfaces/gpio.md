@@ -1,19 +1,16 @@
 # GPIO
 
 Pico de Gallo exposes 4 general-purpose I/O pins (**GPIO 0–3**) mapped to
-RP2350 **GPIO 8–11**. These pins are shared with the
-[Logic Capture](./logic-capture.md) channels 0–3 — when a capture session
-is active, the corresponding GPIO pins are unavailable for normal GPIO
-operations.
+RP2350 **GPIO 8–11**.
 
 ## Pin Mapping
 
-| Gallo Pin | RP2350 GPIO | Logic Capture Channel |
-|-----------|-------------|-----------------------|
-| 0         | 8           | Channel 0             |
-| 1         | 9           | Channel 1             |
-| 2         | 10          | Channel 2             |
-| 3         | 11          | Channel 3             |
+| Gallo Pin | RP2350 GPIO |
+|-----------|-------------|
+| 0         | 8           |
+| 1         | 9           |
+| 2         | 10          |
+| 3         | 11          |
 
 ## Operations
 
