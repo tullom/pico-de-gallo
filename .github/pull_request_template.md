@@ -61,12 +61,28 @@ firmware + host releases plus a `pico-de-gallo-internal` minor bump (pre-1.0).
 
 <!-- Hardware test notes, logic-analyzer captures, etc. -->
 
+## Book ↔ code parity
+
+<!--
+Every code change must land with the matching `book/src/...` update
+in the same PR. See AGENTS.md §15.1 for the per-area mapping and
+reviewer checklist. PRs that ship code without docs (or docs without
+verifying the code) will be flagged as blockers by reviewers,
+including the automated Copilot reviewer.
+-->
+
+- [ ] No book-visible behavior changed in this PR.
+- [ ] Book chapters updated in this PR to match the code change. List them:
+  - <!-- e.g. book/src/interfaces/i2c.md, book/src/appendix/endpoints.md -->
+- [ ] If only the book changed: I re-verified the code still matches what the new book text claims, and re-derived any tables (endpoints, status codes, capability bits) from the source files in AGENTS.md §15.1.
+- [ ] `mdbook build book` is clean locally.
+
 ## Checklist
 
 - [ ] Commits follow Conventional Commits with a correct scope.
 - [ ] `Cargo.lock` is committed alongside any `Cargo.toml` change (host **and** firmware workspaces, as relevant). I ran with `--locked`.
 - [ ] New `=X.Y.Z` exact pins are documented in `.github/copilot-instructions.md` under "Pinned dependency rationale".
 - [ ] Public items have rustdoc; PyO3 items have docstrings.
-- [ ] `book/` updated for new endpoints, CLI flags, or behavior changes.
+- [ ] `book/` updated for new endpoints, CLI flags, or behavior changes (see "Book ↔ code parity" above).
 - [ ] `CHANGELOG.md` entries follow Keep a Changelog (or the change is covered by release-please labels).
 - [ ] AI-assisted commits include `Co-authored-by: Copilot` and `Assisted-by:` trailers; no `Signed-off-by:` on AI commits.

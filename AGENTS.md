@@ -127,6 +127,11 @@ nothing to run `dos2unix` anyway.
     (the `upstream` git remote). The `origin` remote on this checkout
     points at the maintainer's personal fork. All docs, templates,
     and links should use `OpenDevicePartnership/...`.
+11. **Book and code must stay in sync.** Every PR — human or
+    AI-authored — has to land both the code change *and* the
+    matching `book/` update in the same logical change. See §15.1
+    for the parity rule, the per-area mapping, and the reviewer
+    checklist.
 
 ---
 
@@ -621,7 +626,17 @@ PyO3 cannot extract a `Vec<T>` of `#[pyclass]` enums unless `T:
 Clone` and `from_py_object` is set. **Fix:** `#[derive(Clone)]` +
 `#[pyclass(from_py_object)]`.
 
-### 13.16 Past regressions log
+### 13.16 Shipping code without the matching book change
+
+If your PR touches a CLI flag, endpoint, status code, FFI
+function, Python binding, configuration enum, schema version, or
+hardware-revision capability and the corresponding `book/src/...`
+chapter is **not** in the same diff, the PR is incomplete. See
+§15.1 for the parity rule, per-area mapping, and reviewer
+checklist. Reviewers (including the GitHub Copilot reviewer)
+should flag this as a blocker.
+
+### 13.17 Past regressions log
 
 When you fix a new regression, **add a one-line row here** so the
 next agent doesn't repeat it.
@@ -663,6 +678,71 @@ next agent doesn't repeat it.
   alters a release artifact name or path.
 - `README.md` at the repo root reflects the high-level overview;
   keep it in sync.
+
+### 15.1 Book ↔ code parity (hard rule)
+
+The `book/` directory is reference documentation, not marketing
+copy. It **must always describe the code that is on `main`**. Any
+drift is a bug.
+
+Concretely:
+
+- **Code change?** Update the book in the *same* PR. If you add,
+  rename, or remove a CLI flag, endpoint, status code, struct
+  field, FFI function, Python binding, configuration enum, or
+  hardware-revision capability, the corresponding `book/src/...`
+  chapter must change in lockstep. A PR that ships code without
+  the matching book edits is incomplete.
+- **Book change?** Re-verify the code still does what the book
+  now claims. Re-run the CLI snippets, re-derive the endpoint
+  list from `pico-de-gallo-internal/src/lib.rs`, re-derive the
+  status-code table from `pico-de-gallo-ffi/src/lib.rs`. If the
+  book is being fixed because it had drifted, also open an issue
+  (or fix in the same PR) for whichever side regressed.
+- **No "I'll do the docs next."** Documentation debt rots faster
+  than code debt because nobody runs it. The PR template
+  enforces this with an explicit checkbox; reviewers should
+  block PRs that tick "no docs needed" without justification.
+
+**Per-area mapping** — when you change a file on the left, also
+update at least the chapter(s) on the right:
+
+| Code area                                                   | Book chapter(s)                                                          |
+|-------------------------------------------------------------|--------------------------------------------------------------------------|
+| `pico-de-gallo-internal/src/lib.rs` — endpoints / topics    | `book/src/appendix/endpoints.md`, `book/src/internals/wire-protocol.md`  |
+| `pico-de-gallo-internal/src/lib.rs` — wire enums (variants) | `book/src/internals/wire-protocol.md`, relevant `book/src/interfaces/*`  |
+| `pico-de-gallo-ffi/src/lib.rs` — `Status` enum              | `book/src/appendix/status-codes.md`                                      |
+| `pico-de-gallo-ffi/src/lib.rs` — `gallo_*` functions        | `book/src/crates/ffi.md`                                                 |
+| `pico-de-gallo-app/src/...` — CLI subcommands/flags         | `book/src/crates/app.md`, the relevant `book/src/interfaces/*` chapter   |
+| `pico-de-gallo-lib/src/lib.rs` — public methods             | `book/src/crates/lib.md`                                                 |
+| `pico-de-gallo-hal/src/...` — trait impls                   | `book/src/crates/hal.md`, `book/src/driver/*`                            |
+| `pyco-de-gallo/src/...` — Python surface                    | `book/src/crates/python.md`                                              |
+| `pico-de-gallo-firmware/src/...` — peripheral behaviour     | `book/src/internals/firmware.md`, `book/src/interfaces/*`                |
+| `crates/pico-de-gallo-internal/build.rs` — schema version   | `book/src/internals/releases.md`, `book/src/internals/wire-protocol.md`  |
+| `hardware/` — KiCad changes (new revision, pin remap)       | `book/src/hardware/{overview,revisions,pinout}.md`                       |
+| `CHANGELOG.md`                                              | Add the entry; release-please will surface it in the GitHub Release.     |
+
+**Reviewer checklist (humans *and* the GitHub Copilot reviewer).**
+For every PR, confirm:
+
+1. Every code change has a paired book change (or an explicit
+   one-line note in the PR body explaining why none was needed).
+2. CLI examples in any modified `book/src/**` page still match
+   the actual `gallo --help` output for that subcommand.
+3. Tables of endpoints, status codes, wire enums, and capability
+   bits in the book match the source-of-truth files listed above.
+4. New endpoints in `pico-de-gallo-internal` show up in
+   `book/src/appendix/endpoints.md` **and** are linked from the
+   relevant interface chapter.
+5. Wire-protocol changes (variant adds, request/response shape
+   changes) include a schema-version bump (see §6) **and** a
+   `book/src/internals/releases.md` mention.
+6. `mdbook build book` is clean (no broken links, no missing
+   referenced files) — CI builds the book on every PR via
+   `.github/workflows/gh-pages.yml`'s build step.
+
+Reviewers, including the automated Copilot reviewer, should flag
+PRs that violate any of the above as a **blocker**, not a nit.
 
 ## 16. Pre-release checklist (manual tags only)
 
