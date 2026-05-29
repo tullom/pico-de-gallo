@@ -5,6 +5,7 @@ permission:
   edit: allow
   bash: ask
   webfetch: allow
+  task: deny
 ---
 
 # Coder

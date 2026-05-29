@@ -16,6 +16,7 @@ permission:
     "gh *": ask
     "*": ask
   webfetch: allow
+  task: deny
 ---
 
 # Integrator

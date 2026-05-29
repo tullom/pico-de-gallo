@@ -5,6 +5,7 @@ permission:
   edit: deny
   bash: ask
   webfetch: allow
+  task: allow
 ---
 
 # Project Manager / Coordinator
