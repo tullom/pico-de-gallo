@@ -60,9 +60,9 @@ use pico_de_gallo_internal::{
     PwmGetConfigurationRequest, PwmGetDutyCycle, PwmGetDutyCycleRequest, PwmSetConfiguration,
     PwmSetConfigurationRequest, PwmSetDutyCycle, PwmSetDutyCycleRequest, SCHEMA_VERSION_MINOR, SpiBatch,
     SpiBatchRequest, SpiFlush, SpiGetConfiguration, SpiRead, SpiReadRequest, SpiSetConfiguration,
-    SpiSetConfigurationRequest, SpiTransfer, SpiTransferRequest, SpiWrite, SpiWriteRequest, UartFlush,
-    UartGetConfiguration, UartRead, UartReadRequest, UartSetConfiguration, UartSetConfigurationRequest, UartWrite,
-    UartWriteRequest, Version,
+    SpiSetConfigurationRequest, SpiTransfer, SpiTransferRequest, SpiWrite, SpiWriteRequest, SystemResetSubscriptions,
+    UartFlush, UartGetConfiguration, UartRead, UartReadRequest, UartSetConfiguration, UartSetConfigurationRequest,
+    UartWrite, UartWriteRequest, Version,
 };
 
 pub use pico_de_gallo_internal::{
@@ -73,6 +73,7 @@ pub use pico_de_gallo_internal::{
 pub use pico_de_gallo_internal::{
     AdcError, GpioError, I2cBatchError, I2cError, OneWireError, PwmError, SpiBatchError, SpiError, UartError,
 };
+pub use pico_de_gallo_internal::{MAX_BATCH_OPS, MAX_TRANSFER_SIZE};
 pub use pico_de_gallo_internal::{
     encode_i2c_batch_ops, encode_spi_batch_ops, i2c_batch_response_len, spi_batch_response_len,
 };
@@ -187,6 +188,35 @@ impl core::fmt::Display for ValidateError {
 }
 
 impl std::error::Error for ValidateError {}
+
+/// Map a [`HostErr`] surfaced by [`PicoDeGallo::validate`] to a
+/// [`ValidateError`].
+///
+/// Policy: only the two `WireError` variants that postcard-rpc emits when
+/// the server has no handler for an endpoint key —
+/// [`WireError::UnknownKey`] and [`WireError::KeyTooSmall`] — are treated
+/// as a *legacy-firmware* signal. Every other variant (including
+/// [`WireError::DeserFailed`], frame-size errors, host-side
+/// [`HostErr::BadResponse`], [`HostErr::Postcard`], and
+/// [`HostErr::Closed`]) is a real comms/protocol fault and routes to
+/// [`ValidateError::Comms`] so users do not chase a non-existent firmware
+/// upgrade.
+///
+/// In particular, `DeserFailed` is *not* `LegacyFirmware`: a legacy
+/// firmware that lacks the endpoint will reply with `UnknownKey`, not a
+/// deserialization failure. A `DeserFailed` here means the firmware
+/// reached the handler but our request/response shape disagrees — that
+/// is a comms-layer / wire-schema bug, not a missing endpoint.
+///
+/// The wildcard arm is deliberate so that future additions to either
+/// `HostErr` or `WireError` (both `#[non_exhaustive]`-adjacent in
+/// practice) default to the safer `Comms` classification.
+fn map_validate_error(e: HostErr<WireError>) -> ValidateError {
+    match &e {
+        HostErr::Wire(WireError::UnknownKey) | HostErr::Wire(WireError::KeyTooSmall) => ValidateError::LegacyFirmware,
+        _ => ValidateError::Comms(e),
+    }
+}
 
 /// Async client for a Pico de Gallo USB bridge device.
 ///
@@ -630,10 +660,7 @@ impl PicoDeGallo {
             .client
             .send_resp::<GetDeviceInfo>(&())
             .await
-            .map_err(|e| match &e {
-                HostErr::Closed => ValidateError::Comms(e),
-                _ => ValidateError::LegacyFirmware,
-            })?;
+            .map_err(map_validate_error)?;
 
         // Pre-1.0: minor version must match (0.x bumps are breaking).
         // Post-1.0: switch to major version matching.
@@ -645,6 +672,34 @@ impl PicoDeGallo {
         }
 
         Ok(info)
+    }
+
+    /// Tear down any GPIO subscriptions left over from a previous host
+    /// session.
+    ///
+    /// Subscriptions are server-side state that survives the USB transport
+    /// — if a previous host crashed, was killed, or dropped its
+    /// [`nusb::Interface`] without sending `gpio/unsubscribe`, the firmware
+    /// will still consider those pins owned by a monitor task. Calling this
+    /// method on connect cleans up that state so the new host can use the
+    /// pins.
+    ///
+    /// Returns the number of subscriptions that were torn down (0 if none
+    /// were active). The endpoint is idempotent and cheap to call when no
+    /// subscriptions exist, so the recommended sequence after construction
+    /// is:
+    ///
+    /// ```no_run
+    /// # use pico_de_gallo_lib::PicoDeGallo;
+    /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+    /// let gallo = PicoDeGallo::new();
+    /// let _info = gallo.validate().await?;
+    /// let _reset = gallo.system_reset_subscriptions().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn system_reset_subscriptions(&self) -> Result<u8, PicoDeGalloError<Infallible>> {
+        Ok(self.client.send_resp::<SystemResetSubscriptions>(&()).await?)
     }
 
     /// Query the current I2C bus configuration.
@@ -981,5 +1036,99 @@ mod tests {
         };
         let cloned = desc.clone();
         assert_eq!(format!("{:?}", desc), format!("{:?}", cloned));
+    }
+
+    // --- map_validate_error policy (P1-1) ---
+    //
+    // The matches below are deliberately exhaustive: if upstream
+    // postcard-rpc adds a new `WireError` or `HostErr` variant, the
+    // compiler will force us to revisit the mapping policy rather than
+    // silently routing the new variant through the wildcard arm.
+
+    use postcard_rpc::standard_icd::{FrameTooLong, FrameTooShort};
+
+    fn assert_legacy(e: HostErr<WireError>) {
+        match map_validate_error(e) {
+            ValidateError::LegacyFirmware => {}
+            other => panic!("expected LegacyFirmware, got {other:?}"),
+        }
+    }
+
+    fn assert_comms(e: HostErr<WireError>) {
+        match map_validate_error(e) {
+            ValidateError::Comms(_) => {}
+            other => panic!("expected Comms, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_validate_error_covers_every_wire_error_variant() {
+        // Exhaustive match on WireError so any new variant fails the
+        // build until the policy here is updated.
+        let variants = [
+            WireError::FrameTooLong(FrameTooLong { len: 1, max: 0 }),
+            WireError::FrameTooShort(FrameTooShort { len: 0 }),
+            WireError::DeserFailed,
+            WireError::SerFailed,
+            WireError::UnknownKey,
+            WireError::FailedToSpawn,
+            WireError::KeyTooSmall,
+        ];
+        for v in variants {
+            // Force exhaustiveness check.
+            match &v {
+                WireError::FrameTooLong(_)
+                | WireError::FrameTooShort(_)
+                | WireError::DeserFailed
+                | WireError::SerFailed
+                | WireError::UnknownKey
+                | WireError::FailedToSpawn
+                | WireError::KeyTooSmall => {}
+            }
+            match v {
+                WireError::UnknownKey | WireError::KeyTooSmall => assert_legacy(HostErr::Wire(v)),
+                _ => assert_comms(HostErr::Wire(v)),
+            }
+        }
+    }
+
+    #[test]
+    fn map_validate_error_covers_every_host_err_variant() {
+        // Exhaustive coverage on HostErr<WireError> (excluding the
+        // Wire variant, which is exercised above).
+        let cases: [HostErr<WireError>; 3] = [
+            HostErr::BadResponse,
+            HostErr::Postcard(postcard::Error::DeserializeUnexpectedEnd),
+            HostErr::Closed,
+        ];
+        for e in cases {
+            // Force exhaustiveness.
+            match &e {
+                HostErr::Wire(_) | HostErr::BadResponse | HostErr::Postcard(_) | HostErr::Closed => {}
+            }
+            assert_comms(e);
+        }
+    }
+
+    #[test]
+    fn map_validate_error_deser_failed_routes_to_comms_not_legacy() {
+        // Regression guard for the policy comment on map_validate_error:
+        // DeserFailed must NOT be interpreted as "missing endpoint".
+        assert_comms(HostErr::Wire(WireError::DeserFailed));
+    }
+
+    #[test]
+    fn map_validate_error_unknown_key_is_legacy() {
+        assert_legacy(HostErr::Wire(WireError::UnknownKey));
+    }
+
+    #[test]
+    fn map_validate_error_key_too_small_is_legacy() {
+        assert_legacy(HostErr::Wire(WireError::KeyTooSmall));
+    }
+
+    #[test]
+    fn map_validate_error_closed_is_comms() {
+        assert_comms(HostErr::Closed);
     }
 }

@@ -317,6 +317,7 @@ same commit**.
 | `"onewire/write-pullup"` | 1-Wire write + strong pullup (parasitic power)          |
 | `"onewire/search"`       | Start 1-Wire ROM search                                 |
 | `"onewire/search-next"`  | Continue 1-Wire ROM search                              |
+| `"system/reset-subscriptions"` | Tear down all GPIO subscriptions (host calls on connect) |
 
 ### 6.4 Topics (server → client push)
 
@@ -646,6 +647,7 @@ next agent doesn't repeat it.
 | 2026-05-04 | `embassy-usb-driver 0.2.1` (transitive)        | `EndpointError: embedded_io_async::Error` trait bound fails on firmware build. | Pin `embassy-usb-driver = "=0.2.0"` in firmware Cargo.toml; commit firmware `Cargo.lock`. |
 | 2026-05-04 | `elf2uf2-rs 2.2.0` on crates.io is stale       | Release CI fails: `--family` flag does not exist in published binary.          | Install elf2uf2-rs from git (`cargo install --git … --locked`) or revert to picotool.     |
 | 2026-05-04 | Tag-triggered workflow uses tagged-commit YAML | After force-pushing the release commit, GitHub still ran the old workflow.     | Always re-tag after rewriting a release commit; verify with `git show <tag>:<workflow>`.  |
+| 2026-05-29 | Host crash/kill while a GPIO subscription was active | Pin permanently owned by firmware monitor task until power cycle; new host got `PinMonitored`. | Added `system/reset-subscriptions` endpoint; host calls it after `validate()`. Lockstep schema bump (internal 0.5→0.6, lib 0.5→0.6, hal 0.5→0.6, ffi 0.6→0.7, app 0.6→0.7, pyco 0.2→0.3, firmware 0.9→0.10). |
 
 ---
 

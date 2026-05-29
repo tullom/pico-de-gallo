@@ -7,6 +7,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- **internal**: New `system/reset-subscriptions` endpoint appended to
+  the wire protocol. Schema version bumps via the
+  `pico-de-gallo-internal` version bump (`0.5.0` → `0.6.0`); under the
+  pre-1.0 schema-versioning rule this is a breaking schema bump, so
+  hosts and firmware must be upgraded together. Lockstep version
+  bumps: `pico-de-gallo-internal` `0.5.0` → `0.6.0`,
+  `pico-de-gallo-lib` `0.5.0` → `0.6.0`, `pico-de-gallo-hal` `0.5.0`
+  → `0.6.0`, `pico-de-gallo-ffi` `0.6.0` → `0.7.0`, `gallo` (CLI)
+  `0.6.0` → `0.7.0`, `pyco-de-gallo` `0.2.0` → `0.3.0`,
+  `pico-de-gallo-firmware` `0.9.0` → `0.10.0`. ([REVIEW-2026-05-29
+  P1-3])
+
+### Added
+
+- **internal/firmware**: `system/reset-subscriptions` endpoint
+  (request `()`, response `u8` count). Firmware iterates its GPIO
+  monitor slots, signals stop on each live one, awaits the `Flex` pin
+  back from the monitor task, and returns it to `Context`. Idempotent
+  and cheap when no subscriptions are active. The endpoint is the
+  recovery path for the leak described in P1-3: GPIO subscriptions
+  are server-side state that survives the USB transport, so a host
+  process that crashed (or was killed, or dropped its
+  `nusb::Interface`) without sending `gpio/unsubscribe` would
+  permanently strand the affected pins until a power cycle.
+- **lib**: `PicoDeGallo::system_reset_subscriptions()` host method
+  returns the number of subscriptions reset. The recommended connect
+  sequence is now `new()` → `validate().await?` →
+  `system_reset_subscriptions().await?`.
+- **ffi**: `gallo_system_reset_subscriptions(const PicoDeGallo *,
+  uint8_t *out_reset)`. `out_reset` may be `NULL`. New appended
+  `Status` code: `SystemResetSubscriptionsFailed = -69`.
+- **pyco**: `PycoDeGallo.system_reset_subscriptions()` returns an
+  `int`.
+- **ffi**: `gallo_spi_transfer`, `gallo_spi_batch`, and `gallo_i2c_batch`
+  expose the high-throughput SPI full-duplex and atomic CS-held batch
+  primitives (and the equivalent I<sup>2</sup>C multi-op primitive) to C
+  consumers that previously could only call them from Rust. Batch ops
+  are passed via C-friendly tagged structs (`GalloSpiBatchOp`,
+  `GalloI2cBatchOp`); on per-operation failure, an optional
+  `out_failed_op` pointer receives the zero-based index of the failing
+  op. Three new appended `Status` codes: `I2cBatchFailed = -66`,
+  `SpiBatchFailed = -67`, `SpiTransferFailed = -68`. The wire protocol
+  is unchanged — these are pure FFI surface additions over existing
+  endpoints. ([REVIEW-2026-05-29 P1-2])
+- **lib**: `MAX_BATCH_OPS` and `MAX_TRANSFER_SIZE` are now re-exported
+  from `pico-de-gallo-internal` so downstream consumers don't have to
+  pull in the wire crate just to validate batch sizes.
+
+### Changed
+
+- **ffi**: All `gallo_*` functions now take `const PicoDeGallo *` for the
+  device handle (previously `PicoDeGallo *` on every function except
+  `gallo_init*` / `gallo_free`). The C ABI (pointer width, calling
+  convention, status codes) is unchanged, but C consumers that typed their
+  handle as `PicoDeGallo *` and previously cast away `const` on every call
+  can now drop those casts. Header consumers with `-Wcast-qual` enabled
+  will stop warning. The opaque handle remains thread-safe (`Send + Sync`)
+  and interior-mutable. ([REVIEW-2026-05-29 P1-4])
+
+### Fixed
+
+- **lib**: `PicoDeGallo::validate()` no longer mis-classifies transport,
+  postcard-decode, and frame-size errors as `ValidateError::LegacyFirmware`.
+  Only `WireError::UnknownKey` and `WireError::KeyTooSmall` (the
+  postcard-rpc signals for "this firmware has no handler for that
+  endpoint key") map to `LegacyFirmware`; every other host error routes
+  to `ValidateError::Comms`, so users see "comms failure" instead of
+  being told to upgrade firmware that is already current. Surfaces in
+  `gallo_get_device_info` as the correct `Status::CommsFailed` (−1) when
+  the wire is the actual problem. ([REVIEW-2026-05-29 P1-1])
+
 ## [0.9.0] — 2026-05-04
 
 **Crate versions:** internal 0.5.0, lib 0.5.0, hal 0.5.0, ffi 0.6.0, app 0.6.0, firmware 0.9.0, pyco 0.2.0

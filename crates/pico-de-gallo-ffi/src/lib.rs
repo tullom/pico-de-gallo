@@ -37,8 +37,8 @@
 
 use futures::executor::block_on;
 use pico_de_gallo_lib::{
-    self as lib, AdcChannel, AdcError, GpioError, I2cError, OneWireError, PicoDeGalloError,
-    PwmError, SpiError, UartError,
+    self as lib, AdcChannel, AdcError, GpioError, I2cBatchError, I2cBatchOp, I2cError,
+    OneWireError, PicoDeGalloError, PwmError, SpiBatchError, SpiBatchOp, SpiError, UartError,
 };
 use std::ffi::CStr;
 use std::os::raw::c_char;
@@ -200,6 +200,14 @@ pub enum Status {
     LegacyFirmware = -64,
     /// Peripheral is not supported on this hardware revision
     Unsupported = -65,
+    /// I2C batch transaction failed
+    I2cBatchFailed = -66,
+    /// SPI batch transaction failed
+    SpiBatchFailed = -67,
+    /// SPI full-duplex transfer failed
+    SpiTransferFailed = -68,
+    /// Resetting server-side subscriptions failed
+    SystemResetSubscriptionsFailed = -69,
 }
 
 // ----------------------------- Error Mapping Helpers -----------------------------
@@ -356,7 +364,7 @@ pub unsafe extern "C" fn gallo_free(gallo: *const PicoDeGallo) {
 /// Caller must ensure that `gallo` is a valid, opaque pointer to
 /// `PicoDeGallo` returned by `gallo_init()`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn gallo_ping(gallo: *mut PicoDeGallo, id: *mut u32) -> Status {
+pub unsafe extern "C" fn gallo_ping(gallo: *const PicoDeGallo, id: *mut u32) -> Status {
     if gallo.is_null() {
         eprintln!("Unexpected NULL context");
         return Status::Uninitialized;
@@ -384,6 +392,51 @@ pub unsafe extern "C" fn gallo_ping(gallo: *mut PicoDeGallo, id: *mut u32) -> St
     }
 }
 
+/// gallo_system_reset_subscriptions - Tear down GPIO subscriptions left
+/// over from a previous host session.
+///
+/// Subscriptions are server-side state; if a previous host process
+/// crashed or was killed without sending `gpio/unsubscribe`, those pins
+/// remain owned by firmware monitor tasks across reconnects. Hosts
+/// should call this once on connect, after `gallo_init` succeeds, to
+/// reclaim any such pins. It is idempotent and cheap on a fresh device.
+///
+/// On success, writes the number of subscriptions that were reset to
+/// `*out_reset` (0 if `out_reset` is non-NULL and no subscriptions were
+/// active). `out_reset` may be NULL if the caller does not need the
+/// count.
+///
+/// # Safety
+///
+/// Caller must ensure that `gallo` is a valid, opaque pointer to
+/// `PicoDeGallo` returned by `gallo_init()`. If non-NULL, `out_reset`
+/// must point to a valid, writable `uint8_t`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gallo_system_reset_subscriptions(
+    gallo: *const PicoDeGallo,
+    out_reset: *mut u8,
+) -> Status {
+    if gallo.is_null() {
+        eprintln!("Unexpected NULL context");
+        return Status::Uninitialized;
+    }
+
+    // Safety: caller must ensure that `gallo` is a valid opaque
+    // pointer to `PicoDeGallo` returned by `gallo_init()`.
+    let gallo = unsafe { &*gallo };
+
+    match block_on(gallo.0.system_reset_subscriptions()) {
+        Ok(n) => {
+            if !out_reset.is_null() {
+                // Safety: caller asserts `out_reset` is writable if non-null.
+                unsafe { *out_reset = n };
+            }
+            Status::Ok
+        }
+        Err(_) => Status::SystemResetSubscriptionsFailed,
+    }
+}
+
 // ----------------------------- I2c endpoints -----------------------------
 
 /// gallo_i2c_read - Read `len` bytes from the device at `address` into `buf`.
@@ -397,7 +450,7 @@ pub unsafe extern "C" fn gallo_ping(gallo: *mut PicoDeGallo, id: *mut u32) -> St
 /// for `len` bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gallo_i2c_read(
-    gallo: *mut PicoDeGallo,
+    gallo: *const PicoDeGallo,
     address: u8,
     buf: *mut u8,
     len: usize,
@@ -454,7 +507,7 @@ pub unsafe extern "C" fn gallo_i2c_read(
 /// for `len` bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gallo_i2c_write(
-    gallo: *mut PicoDeGallo,
+    gallo: *const PicoDeGallo,
     address: u8,
     buf: *const u8,
     len: usize,
@@ -500,7 +553,7 @@ pub unsafe extern "C" fn gallo_i2c_write(
 /// for `txlen` bytes, and `rxbuf` must be valid for `rxlen` bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gallo_i2c_write_read(
-    gallo: *mut PicoDeGallo,
+    gallo: *const PicoDeGallo,
     address: u8,
     txbuf: *const u8,
     txlen: usize,
@@ -569,7 +622,7 @@ pub unsafe extern "C" fn gallo_i2c_write_read(
 /// `buf_len` bytes, and `found` must point to a valid `usize`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gallo_i2c_scan(
-    gallo: *mut PicoDeGallo,
+    gallo: *const PicoDeGallo,
     include_reserved: bool,
     buf: *mut u8,
     buf_len: usize,
@@ -618,7 +671,7 @@ pub unsafe extern "C" fn gallo_i2c_scan(
 /// for `len` bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gallo_spi_read(
-    gallo: *mut PicoDeGallo,
+    gallo: *const PicoDeGallo,
     buf: *mut u8,
     len: usize,
 ) -> Status {
@@ -674,7 +727,7 @@ pub unsafe extern "C" fn gallo_spi_read(
 /// for `len` bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gallo_spi_write(
-    gallo: *mut PicoDeGallo,
+    gallo: *const PicoDeGallo,
     buf: *const u8,
     len: usize,
 ) -> Status {
@@ -717,7 +770,7 @@ pub unsafe extern "C" fn gallo_spi_write(
 /// Caller must ensure that `gallo` is a valid, opaque pointer to
 /// `PicoDeGallo` returned by `gallo_init()`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn gallo_spi_flush(gallo: *mut PicoDeGallo) -> Status {
+pub unsafe extern "C" fn gallo_spi_flush(gallo: *const PicoDeGallo) -> Status {
     if gallo.is_null() {
         eprintln!("Unexpected NULL context");
         return Status::Uninitialized;
@@ -735,6 +788,397 @@ pub unsafe extern "C" fn gallo_spi_flush(gallo: *mut PicoDeGallo) -> Status {
     }
 }
 
+// ----------------------------- SPI Transfer endpoint -----------------------------
+
+/// gallo_spi_transfer - Full-duplex SPI transfer.
+///
+/// Simultaneously sends `len` bytes from `write_buf` on MOSI and receives
+/// `len` bytes on MISO into `read_buf`. The two buffers must be valid for
+/// `len` bytes each; they MAY alias (same pointer is permitted; the firmware
+/// returns a fresh response buffer that is then copied into `read_buf`).
+///
+/// Returns [`Status::Ok`] on success. Returns [`Status::BufferTooLong`] if
+/// `len` exceeds the firmware transfer limit ([`lib::MAX_TRANSFER_SIZE`]),
+/// [`Status::SpiTransferFailed`] if the firmware reports a generic SPI
+/// error, or [`Status::CommsFailed`] on a USB error.
+///
+/// # Safety
+///
+/// Caller must ensure that `gallo` is a valid, opaque pointer to
+/// `PicoDeGallo` returned by `gallo_init()` and that both `write_buf` and
+/// `read_buf` are valid for `len` bytes (read and write respectively).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gallo_spi_transfer(
+    gallo: *const PicoDeGallo,
+    write_buf: *const u8,
+    read_buf: *mut u8,
+    len: usize,
+) -> Status {
+    if gallo.is_null() {
+        eprintln!("Unexpected NULL context");
+        return Status::Uninitialized;
+    }
+
+    if write_buf.is_null() || read_buf.is_null() {
+        eprintln!("Unexpected NULL buffer");
+        return Status::InvalidArgument;
+    }
+
+    if len > u16::MAX.into() {
+        eprintln!("Buffer is too large");
+        return Status::InvalidArgument;
+    }
+
+    // Safety: caller must ensure that `gallo` is a valid opaque
+    // pointer to `PicoDeGallo` returned by `gallo_init()`.
+    let gallo = unsafe { &*gallo };
+
+    // Safety: caller must ensure write_buf is valid for len bytes.
+    let write = unsafe { std::slice::from_raw_parts(write_buf, len) };
+
+    let result = block_on(gallo.0.spi_transfer(write));
+
+    match result {
+        Ok(data) => {
+            if data.len() != len {
+                eprintln!("Firmware returned {} bytes, expected {}", data.len(), len);
+                return Status::InvalidResponse;
+            }
+            // Safety: caller must ensure read_buf is valid for len bytes.
+            let read = unsafe { std::slice::from_raw_parts_mut(read_buf, len) };
+            read.copy_from_slice(&data);
+            Status::Ok
+        }
+        Err(PicoDeGalloError::Endpoint(SpiError::BufferTooLong)) => Status::BufferTooLong,
+        Err(PicoDeGalloError::Endpoint(SpiError::Other)) => Status::SpiTransferFailed,
+        Err(PicoDeGalloError::Comms(_)) => Status::CommsFailed,
+    }
+}
+
+// ----------------------------- SPI Batch endpoint -----------------------------
+
+/// C-friendly tagged-union representation of a single SPI batch operation.
+///
+/// Pass an array of these to [`gallo_spi_batch`]. Field interpretation
+/// depends on `tag`:
+///
+/// | `tag` | Variant    | Fields used                  |
+/// |-------|------------|------------------------------|
+/// | 0     | `Read`     | `read_len`                   |
+/// | 1     | `Write`    | `data`, `data_len`           |
+/// | 2     | `Transfer` | `data`, `data_len`           |
+/// | 3     | `DelayNs`  | `delay_ns`                   |
+///
+/// Unused fields for a given variant are ignored. `data` may be `NULL`
+/// when `data_len` is zero or when the variant does not use it. The tag
+/// values are part of the stable C ABI; do not renumber.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct GalloSpiBatchOp {
+    /// Variant tag: 0 = Read, 1 = Write, 2 = Transfer, 3 = DelayNs.
+    pub tag: u8,
+    /// Read length in bytes (Read variant only).
+    pub read_len: u16,
+    /// Pointer to write/transfer payload (Write / Transfer variants).
+    pub data: *const u8,
+    /// Length of the payload pointed to by `data`, in bytes.
+    pub data_len: usize,
+    /// Delay in nanoseconds (DelayNs variant only).
+    pub delay_ns: u32,
+}
+
+/// gallo_spi_batch - Execute a batch of SPI operations atomically under CS.
+///
+/// The firmware asserts `cs_pin` low before the first operation and
+/// deasserts it after the last (or on error). The concatenated read data
+/// from `Read` and `Transfer` operations is copied into `out_buf` in
+/// order; the total length is written to `*out_len`.
+///
+/// On batch failure, the index of the failing operation (zero-based) is
+/// written to `*out_failed_op` if `out_failed_op` is non-NULL, and a
+/// status reflecting the underlying SPI error is returned. Read data from
+/// operations before the failing one is discarded.
+///
+/// Returns [`Status::Ok`] on success, [`Status::BufferTooLong`] if
+/// `out_buf` is too small for the cumulative read data, or one of the
+/// SPI error statuses on a per-operation failure. `out_failed_op` is only
+/// written on per-operation failure, never on success.
+///
+/// # Safety
+///
+/// Caller must ensure that:
+/// - `gallo` is a valid opaque pointer returned by `gallo_init()`.
+/// - `ops` points to `ops_count` initialized [`GalloSpiBatchOp`] values.
+/// - For each op with `data_len > 0`, the `data` pointer is valid for
+///   `data_len` bytes for the duration of the call.
+/// - `out_buf` is valid for `out_capacity` bytes when `out_capacity > 0`.
+/// - `out_len` is non-NULL and points to a writable `usize`.
+/// - `out_failed_op`, if non-NULL, points to a writable `u16`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gallo_spi_batch(
+    gallo: *const PicoDeGallo,
+    cs_pin: u8,
+    ops: *const GalloSpiBatchOp,
+    ops_count: usize,
+    out_buf: *mut u8,
+    out_capacity: usize,
+    out_len: *mut usize,
+    out_failed_op: *mut u16,
+) -> Status {
+    if gallo.is_null() {
+        eprintln!("Unexpected NULL context");
+        return Status::Uninitialized;
+    }
+    if out_len.is_null() {
+        eprintln!("Unexpected NULL out_len");
+        return Status::InvalidArgument;
+    }
+    if ops.is_null() && ops_count != 0 {
+        eprintln!("Unexpected NULL ops with non-zero count");
+        return Status::InvalidArgument;
+    }
+    if ops_count > lib::MAX_BATCH_OPS {
+        eprintln!("Too many batch operations");
+        return Status::InvalidArgument;
+    }
+    if out_capacity > 0 && out_buf.is_null() {
+        eprintln!("Unexpected NULL out_buf with non-zero capacity");
+        return Status::InvalidArgument;
+    }
+
+    // Safety: caller must ensure that `gallo` is a valid opaque pointer.
+    let gallo = unsafe { &*gallo };
+
+    // Safety: caller must ensure `ops` is valid for `ops_count` elements.
+    let raw_ops: &[GalloSpiBatchOp] = if ops_count == 0 {
+        &[]
+    } else {
+        unsafe { std::slice::from_raw_parts(ops, ops_count) }
+    };
+
+    // Translate to typed SpiBatchOp. Borrow `data` slices for the call
+    // lifetime; the firmware copies them out before responding.
+    let mut typed: Vec<SpiBatchOp<'_>> = Vec::with_capacity(raw_ops.len());
+    for (i, op) in raw_ops.iter().enumerate() {
+        let typed_op = match op.tag {
+            0 => SpiBatchOp::Read { len: op.read_len },
+            1 | 2 => {
+                let data = if op.data_len == 0 {
+                    &[][..]
+                } else if op.data.is_null() {
+                    eprintln!("op {i}: NULL data with non-zero data_len");
+                    return Status::InvalidArgument;
+                } else {
+                    // Safety: caller must ensure data is valid for data_len bytes.
+                    unsafe { std::slice::from_raw_parts(op.data, op.data_len) }
+                };
+                if op.tag == 1 {
+                    SpiBatchOp::Write { data }
+                } else {
+                    SpiBatchOp::Transfer { data }
+                }
+            }
+            3 => SpiBatchOp::DelayNs { ns: op.delay_ns },
+            other => {
+                eprintln!("op {i}: invalid tag {other}");
+                return Status::InvalidArgument;
+            }
+        };
+        typed.push(typed_op);
+    }
+
+    let result = block_on(gallo.0.spi_batch(cs_pin, &typed));
+
+    match result {
+        Ok(data) => {
+            if data.len() > out_capacity {
+                eprintln!(
+                    "SPI batch produced {} bytes, out_buf only fits {}",
+                    data.len(),
+                    out_capacity
+                );
+                // Still report the required length so the caller can retry
+                // with a larger buffer.
+                unsafe { *out_len = data.len() };
+                return Status::BufferTooLong;
+            }
+            if !data.is_empty() {
+                // Safety: out_buf validated above when capacity > 0.
+                let slot = unsafe { std::slice::from_raw_parts_mut(out_buf, data.len()) };
+                slot.copy_from_slice(&data);
+            }
+            unsafe { *out_len = data.len() };
+            Status::Ok
+        }
+        Err(PicoDeGalloError::Endpoint(SpiBatchError { failed_op, kind })) => {
+            if !out_failed_op.is_null() {
+                unsafe { *out_failed_op = failed_op };
+            }
+            unsafe { *out_len = 0 };
+            spi_error_to_status(PicoDeGalloError::Endpoint(kind))
+        }
+        Err(PicoDeGalloError::Comms(_)) => {
+            unsafe { *out_len = 0 };
+            Status::CommsFailed
+        }
+    }
+}
+
+// ----------------------------- I2C Batch endpoint -----------------------------
+
+/// C-friendly tagged-union representation of a single I2C batch operation.
+///
+/// Pass an array of these to [`gallo_i2c_batch`]. Field interpretation
+/// depends on `tag`:
+///
+/// | `tag` | Variant | Fields used         |
+/// |-------|---------|---------------------|
+/// | 0     | `Read`  | `read_len`          |
+/// | 1     | `Write` | `data`, `data_len`  |
+///
+/// Unused fields for a given variant are ignored. `data` may be `NULL`
+/// when `data_len` is zero. The tag values are part of the stable C ABI;
+/// do not renumber.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct GalloI2cBatchOp {
+    /// Variant tag: 0 = Read, 1 = Write.
+    pub tag: u8,
+    /// Read length in bytes (Read variant only).
+    pub read_len: u16,
+    /// Pointer to write payload (Write variant).
+    pub data: *const u8,
+    /// Length of the payload pointed to by `data`, in bytes.
+    pub data_len: usize,
+}
+
+/// gallo_i2c_batch - Execute a batch of I2C operations.
+///
+/// Operations execute sequentially with STOP between each (this is *not*
+/// I2C repeated-start; for write-then-read to the same device, prefer
+/// [`gallo_i2c_write_read`]). The concatenated read data from each `Read`
+/// operation is copied into `out_buf` in order; the total length is
+/// written to `*out_len`.
+///
+/// On batch failure, the index of the failing operation (zero-based) is
+/// written to `*out_failed_op` if `out_failed_op` is non-NULL, and a
+/// status reflecting the underlying I2C error is returned. Read data
+/// from operations before the failing one is discarded.
+///
+/// Returns [`Status::Ok`] on success, [`Status::BufferTooLong`] if
+/// `out_buf` is too small for the cumulative read data, or one of the
+/// I2C error statuses on a per-operation failure.
+///
+/// # Safety
+///
+/// Caller must ensure that:
+/// - `gallo` is a valid opaque pointer returned by `gallo_init()`.
+/// - `ops` points to `ops_count` initialized [`GalloI2cBatchOp`] values.
+/// - For each op with `data_len > 0`, the `data` pointer is valid for
+///   `data_len` bytes for the duration of the call.
+/// - `out_buf` is valid for `out_capacity` bytes when `out_capacity > 0`.
+/// - `out_len` is non-NULL and points to a writable `usize`.
+/// - `out_failed_op`, if non-NULL, points to a writable `u16`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gallo_i2c_batch(
+    gallo: *const PicoDeGallo,
+    address: u8,
+    ops: *const GalloI2cBatchOp,
+    ops_count: usize,
+    out_buf: *mut u8,
+    out_capacity: usize,
+    out_len: *mut usize,
+    out_failed_op: *mut u16,
+) -> Status {
+    if gallo.is_null() {
+        eprintln!("Unexpected NULL context");
+        return Status::Uninitialized;
+    }
+    if out_len.is_null() {
+        eprintln!("Unexpected NULL out_len");
+        return Status::InvalidArgument;
+    }
+    if ops.is_null() && ops_count != 0 {
+        eprintln!("Unexpected NULL ops with non-zero count");
+        return Status::InvalidArgument;
+    }
+    if ops_count > lib::MAX_BATCH_OPS {
+        eprintln!("Too many batch operations");
+        return Status::InvalidArgument;
+    }
+    if out_capacity > 0 && out_buf.is_null() {
+        eprintln!("Unexpected NULL out_buf with non-zero capacity");
+        return Status::InvalidArgument;
+    }
+
+    // Safety: caller must ensure that `gallo` is a valid opaque pointer.
+    let gallo = unsafe { &*gallo };
+
+    // Safety: caller must ensure `ops` is valid for `ops_count` elements.
+    let raw_ops: &[GalloI2cBatchOp] = if ops_count == 0 {
+        &[]
+    } else {
+        unsafe { std::slice::from_raw_parts(ops, ops_count) }
+    };
+
+    let mut typed: Vec<I2cBatchOp<'_>> = Vec::with_capacity(raw_ops.len());
+    for (i, op) in raw_ops.iter().enumerate() {
+        let typed_op = match op.tag {
+            0 => I2cBatchOp::Read { len: op.read_len },
+            1 => {
+                let data = if op.data_len == 0 {
+                    &[][..]
+                } else if op.data.is_null() {
+                    eprintln!("op {i}: NULL data with non-zero data_len");
+                    return Status::InvalidArgument;
+                } else {
+                    // Safety: caller must ensure data is valid for data_len bytes.
+                    unsafe { std::slice::from_raw_parts(op.data, op.data_len) }
+                };
+                I2cBatchOp::Write { data }
+            }
+            other => {
+                eprintln!("op {i}: invalid tag {other}");
+                return Status::InvalidArgument;
+            }
+        };
+        typed.push(typed_op);
+    }
+
+    let result = block_on(gallo.0.i2c_batch(address, &typed));
+
+    match result {
+        Ok(data) => {
+            if data.len() > out_capacity {
+                eprintln!(
+                    "I2C batch produced {} bytes, out_buf only fits {}",
+                    data.len(),
+                    out_capacity
+                );
+                unsafe { *out_len = data.len() };
+                return Status::BufferTooLong;
+            }
+            if !data.is_empty() {
+                let slot = unsafe { std::slice::from_raw_parts_mut(out_buf, data.len()) };
+                slot.copy_from_slice(&data);
+            }
+            unsafe { *out_len = data.len() };
+            Status::Ok
+        }
+        Err(PicoDeGalloError::Endpoint(I2cBatchError { failed_op, kind })) => {
+            if !out_failed_op.is_null() {
+                unsafe { *out_failed_op = failed_op };
+            }
+            unsafe { *out_len = 0 };
+            i2c_error_to_status(PicoDeGalloError::Endpoint(kind))
+        }
+        Err(PicoDeGalloError::Comms(_)) => {
+            unsafe { *out_len = 0 };
+            Status::CommsFailed
+        }
+    }
+}
+
 // ----------------------------- Gpio endpoints -----------------------------
 
 /// gallo_gpio_get - Get the state of a given GPIO pin.
@@ -747,7 +1191,7 @@ pub unsafe extern "C" fn gallo_spi_flush(gallo: *mut PicoDeGallo) -> Status {
 /// `PicoDeGallo` returned by `gallo_init()`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gallo_gpio_get(
-    gallo: *mut PicoDeGallo,
+    gallo: *const PicoDeGallo,
     pin: u8,
     state: *mut bool,
 ) -> Status {
@@ -785,7 +1229,7 @@ pub unsafe extern "C" fn gallo_gpio_get(
 /// Caller must ensure that `gallo` is a valid, opaque pointer to
 /// `PicoDeGallo` returned by `gallo_init()`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn gallo_gpio_put(gallo: *mut PicoDeGallo, pin: u8, state: bool) -> Status {
+pub unsafe extern "C" fn gallo_gpio_put(gallo: *const PicoDeGallo, pin: u8, state: bool) -> Status {
     if gallo.is_null() {
         eprintln!("Unexpected NULL context");
         return Status::Uninitialized;
@@ -817,7 +1261,7 @@ pub unsafe extern "C" fn gallo_gpio_put(gallo: *mut PicoDeGallo, pin: u8, state:
 /// Caller must ensure that `gallo` is a valid, opaque pointer to
 /// `PicoDeGallo` returned by `gallo_init()`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn gallo_gpio_wait_for_high(gallo: *mut PicoDeGallo, pin: u8) -> Status {
+pub unsafe extern "C" fn gallo_gpio_wait_for_high(gallo: *const PicoDeGallo, pin: u8) -> Status {
     if gallo.is_null() {
         eprintln!("Unexpected NULL context");
         return Status::Uninitialized;
@@ -844,7 +1288,7 @@ pub unsafe extern "C" fn gallo_gpio_wait_for_high(gallo: *mut PicoDeGallo, pin: 
 /// Caller must ensure that `gallo` is a valid, opaque pointer to
 /// `PicoDeGallo` returned by `gallo_init()`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn gallo_gpio_wait_for_low(gallo: *mut PicoDeGallo, pin: u8) -> Status {
+pub unsafe extern "C" fn gallo_gpio_wait_for_low(gallo: *const PicoDeGallo, pin: u8) -> Status {
     if gallo.is_null() {
         eprintln!("Unexpected NULL context");
         return Status::Uninitialized;
@@ -872,7 +1316,7 @@ pub unsafe extern "C" fn gallo_gpio_wait_for_low(gallo: *mut PicoDeGallo, pin: u
 /// `PicoDeGallo` returned by `gallo_init()`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gallo_gpio_wait_for_rising_edge(
-    gallo: *mut PicoDeGallo,
+    gallo: *const PicoDeGallo,
     pin: u8,
 ) -> Status {
     if gallo.is_null() {
@@ -902,7 +1346,7 @@ pub unsafe extern "C" fn gallo_gpio_wait_for_rising_edge(
 /// `PicoDeGallo` returned by `gallo_init()`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gallo_gpio_wait_for_falling_edge(
-    gallo: *mut PicoDeGallo,
+    gallo: *const PicoDeGallo,
     pin: u8,
 ) -> Status {
     if gallo.is_null() {
@@ -931,7 +1375,10 @@ pub unsafe extern "C" fn gallo_gpio_wait_for_falling_edge(
 /// Caller must ensure that `gallo` is a valid, opaque pointer to
 /// `PicoDeGallo` returned by `gallo_init()`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn gallo_gpio_wait_for_any_edge(gallo: *mut PicoDeGallo, pin: u8) -> Status {
+pub unsafe extern "C" fn gallo_gpio_wait_for_any_edge(
+    gallo: *const PicoDeGallo,
+    pin: u8,
+) -> Status {
     if gallo.is_null() {
         eprintln!("Unexpected NULL context");
         return Status::Uninitialized;
@@ -969,7 +1416,7 @@ pub unsafe extern "C" fn gallo_gpio_wait_for_any_edge(gallo: *mut PicoDeGallo, p
 /// `PicoDeGallo` returned by `gallo_init()`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gallo_gpio_set_config(
-    gallo: *mut PicoDeGallo,
+    gallo: *const PicoDeGallo,
     pin: u8,
     direction: u8,
     pull: u8,
@@ -1028,7 +1475,7 @@ pub unsafe extern "C" fn gallo_gpio_set_config(
 /// `PicoDeGallo` returned by `gallo_init()`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gallo_gpio_subscribe(
-    gallo: *mut PicoDeGallo,
+    gallo: *const PicoDeGallo,
     pin: u8,
     edge: u8,
 ) -> Status {
@@ -1071,7 +1518,7 @@ pub unsafe extern "C" fn gallo_gpio_subscribe(
 /// Caller must ensure that `gallo` is a valid, opaque pointer to
 /// `PicoDeGallo` returned by `gallo_init()`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn gallo_gpio_unsubscribe(gallo: *mut PicoDeGallo, pin: u8) -> Status {
+pub unsafe extern "C" fn gallo_gpio_unsubscribe(gallo: *const PicoDeGallo, pin: u8) -> Status {
     if gallo.is_null() {
         eprintln!("Unexpected NULL context");
         return Status::Uninitialized;
@@ -1103,7 +1550,7 @@ pub unsafe extern "C" fn gallo_gpio_unsubscribe(gallo: *mut PicoDeGallo, pin: u8
 /// Caller must ensure that `gallo` is a valid, opaque pointer to
 /// `PicoDeGallo` returned by `gallo_init()`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn gallo_i2c_set_config(gallo: *mut PicoDeGallo, frequency: u8) -> Status {
+pub unsafe extern "C" fn gallo_i2c_set_config(gallo: *const PicoDeGallo, frequency: u8) -> Status {
     if gallo.is_null() {
         eprintln!("Unexpected NULL context");
         return Status::Uninitialized;
@@ -1146,7 +1593,7 @@ pub unsafe extern "C" fn gallo_i2c_set_config(gallo: *mut PicoDeGallo, frequency
 /// `PicoDeGallo` returned by `gallo_init()`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gallo_spi_set_config(
-    gallo: *mut PicoDeGallo,
+    gallo: *const PicoDeGallo,
     frequency: u32,
     spi_phase: bool,
     spi_polarity: bool,
@@ -1196,7 +1643,7 @@ pub unsafe extern "C" fn gallo_spi_set_config(
 /// is a valid pointer to a `u8`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gallo_i2c_get_config(
-    gallo: *mut PicoDeGallo,
+    gallo: *const PicoDeGallo,
     out_frequency: *mut u8,
 ) -> Status {
     if gallo.is_null() {
@@ -1244,7 +1691,7 @@ pub unsafe extern "C" fn gallo_i2c_get_config(
 /// pointers are valid.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gallo_spi_get_config(
-    gallo: *mut PicoDeGallo,
+    gallo: *const PicoDeGallo,
     out_frequency: *mut u32,
     out_phase: *mut bool,
     out_polarity: *mut bool,
@@ -1296,7 +1743,7 @@ pub unsafe extern "C" fn gallo_spi_get_config(
 /// least `count` bytes, and `out_len` is a valid pointer.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gallo_uart_read(
-    gallo: *mut PicoDeGallo,
+    gallo: *const PicoDeGallo,
     buf: *mut u8,
     count: u16,
     timeout_ms: u32,
@@ -1348,7 +1795,7 @@ pub unsafe extern "C" fn gallo_uart_read(
 /// at least `len` bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gallo_uart_write(
-    gallo: *mut PicoDeGallo,
+    gallo: *const PicoDeGallo,
     buf: *const u8,
     len: u16,
 ) -> Status {
@@ -1389,7 +1836,7 @@ pub unsafe extern "C" fn gallo_uart_write(
 /// Caller must ensure that `gallo` is a valid, opaque pointer to
 /// `PicoDeGallo` returned by `gallo_init()`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn gallo_uart_flush(gallo: *mut PicoDeGallo) -> Status {
+pub unsafe extern "C" fn gallo_uart_flush(gallo: *const PicoDeGallo) -> Status {
     if gallo.is_null() {
         eprintln!("Unexpected NULL context");
         return Status::Uninitialized;
@@ -1421,7 +1868,10 @@ pub unsafe extern "C" fn gallo_uart_flush(gallo: *mut PicoDeGallo) -> Status {
 /// Caller must ensure that `gallo` is a valid, opaque pointer to
 /// `PicoDeGallo` returned by `gallo_init()`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn gallo_uart_set_config(gallo: *mut PicoDeGallo, baud_rate: u32) -> Status {
+pub unsafe extern "C" fn gallo_uart_set_config(
+    gallo: *const PicoDeGallo,
+    baud_rate: u32,
+) -> Status {
     if gallo.is_null() {
         eprintln!("Unexpected NULL context");
         return Status::Uninitialized;
@@ -1459,7 +1909,7 @@ pub unsafe extern "C" fn gallo_uart_set_config(gallo: *mut PicoDeGallo, baud_rat
 /// is a valid pointer to a `u32`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gallo_uart_get_config(
-    gallo: *mut PicoDeGallo,
+    gallo: *const PicoDeGallo,
     out_baud_rate: *mut u32,
 ) -> Status {
     if gallo.is_null() {
@@ -1502,7 +1952,7 @@ pub unsafe extern "C" fn gallo_uart_get_config(
 /// `PicoDeGallo` returned by `gallo_init()`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gallo_pwm_set_duty_cycle(
-    gallo: *mut PicoDeGallo,
+    gallo: *const PicoDeGallo,
     channel: u8,
     duty: u16,
 ) -> Status {
@@ -1530,7 +1980,7 @@ pub unsafe extern "C" fn gallo_pwm_set_duty_cycle(
 /// `out_max_duty` are valid pointers.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gallo_pwm_get_duty_cycle(
-    gallo: *mut PicoDeGallo,
+    gallo: *const PicoDeGallo,
     channel: u8,
     out_duty: *mut u16,
     out_max_duty: *mut u16,
@@ -1567,7 +2017,7 @@ pub unsafe extern "C" fn gallo_pwm_get_duty_cycle(
 /// Caller must ensure that `gallo` is a valid, opaque pointer to
 /// `PicoDeGallo` returned by `gallo_init()`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn gallo_pwm_enable(gallo: *mut PicoDeGallo, channel: u8) -> Status {
+pub unsafe extern "C" fn gallo_pwm_enable(gallo: *const PicoDeGallo, channel: u8) -> Status {
     if gallo.is_null() {
         eprintln!("Unexpected NULL context");
         return Status::Uninitialized;
@@ -1589,7 +2039,7 @@ pub unsafe extern "C" fn gallo_pwm_enable(gallo: *mut PicoDeGallo, channel: u8) 
 /// Caller must ensure that `gallo` is a valid, opaque pointer to
 /// `PicoDeGallo` returned by `gallo_init()`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn gallo_pwm_disable(gallo: *mut PicoDeGallo, channel: u8) -> Status {
+pub unsafe extern "C" fn gallo_pwm_disable(gallo: *const PicoDeGallo, channel: u8) -> Status {
     if gallo.is_null() {
         eprintln!("Unexpected NULL context");
         return Status::Uninitialized;
@@ -1613,7 +2063,7 @@ pub unsafe extern "C" fn gallo_pwm_disable(gallo: *mut PicoDeGallo, channel: u8)
 /// `PicoDeGallo` returned by `gallo_init()`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gallo_pwm_set_config(
-    gallo: *mut PicoDeGallo,
+    gallo: *const PicoDeGallo,
     channel: u8,
     frequency_hz: u32,
     phase_correct: bool,
@@ -1643,7 +2093,7 @@ pub unsafe extern "C" fn gallo_pwm_set_config(
 /// pointers are valid.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gallo_pwm_get_config(
-    gallo: *mut PicoDeGallo,
+    gallo: *const PicoDeGallo,
     channel: u8,
     out_frequency_hz: *mut u32,
     out_phase_correct: *mut bool,
@@ -1687,7 +2137,7 @@ pub unsafe extern "C" fn gallo_pwm_get_config(
 /// valid pointer.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gallo_adc_read(
-    gallo: *mut PicoDeGallo,
+    gallo: *const PicoDeGallo,
     channel: u8,
     out_value: *mut u16,
 ) -> Status {
@@ -1734,7 +2184,7 @@ pub unsafe extern "C" fn gallo_adc_read(
 /// are valid.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gallo_adc_get_config(
-    gallo: *mut PicoDeGallo,
+    gallo: *const PicoDeGallo,
     out_resolution_bits: *mut u8,
     out_nominal_reference_mv: *mut u16,
     out_num_gpio_channels: *mut u8,
@@ -1779,7 +2229,7 @@ pub unsafe extern "C" fn gallo_adc_get_config(
 /// Caller must ensure that `gallo` is a valid, opaque pointer to
 /// `PicoDeGallo` returned by `gallo_init()`.
 pub unsafe extern "C" fn gallo_onewire_reset(
-    gallo: *mut PicoDeGallo,
+    gallo: *const PicoDeGallo,
     out_present: *mut bool,
 ) -> Status {
     if gallo.is_null() {
@@ -1815,7 +2265,7 @@ pub unsafe extern "C" fn gallo_onewire_reset(
 /// - `buf` must point to at least `len` writable bytes.
 /// - `out_len` must be a valid writable `u16` pointer.
 pub unsafe extern "C" fn gallo_onewire_read(
-    gallo: *mut PicoDeGallo,
+    gallo: *const PicoDeGallo,
     buf: *mut u8,
     len: u16,
     out_len: *mut u16,
@@ -1851,7 +2301,7 @@ pub unsafe extern "C" fn gallo_onewire_read(
 ///
 /// - `buf` must point to at least `len` readable bytes.
 pub unsafe extern "C" fn gallo_onewire_write(
-    gallo: *mut PicoDeGallo,
+    gallo: *const PicoDeGallo,
     buf: *const u8,
     len: u16,
 ) -> Status {
@@ -1888,7 +2338,7 @@ pub unsafe extern "C" fn gallo_onewire_write(
 ///
 /// - `buf` must point to at least `len` readable bytes.
 pub unsafe extern "C" fn gallo_onewire_write_pullup(
-    gallo: *mut PicoDeGallo,
+    gallo: *const PicoDeGallo,
     buf: *const u8,
     len: u16,
     pullup_duration_ms: u16,
@@ -1927,7 +2377,7 @@ pub unsafe extern "C" fn gallo_onewire_write_pullup(
 /// - `out_rom_ids` must point to at least `max_count` writable `u64` elements.
 /// - `out_count` must be a valid writable `u16` pointer.
 pub unsafe extern "C" fn gallo_onewire_search(
-    gallo: *mut PicoDeGallo,
+    gallo: *const PicoDeGallo,
     out_rom_ids: *mut u64,
     max_count: u16,
     out_count: *mut u16,
@@ -1993,7 +2443,7 @@ pub unsafe extern "C" fn gallo_onewire_search(
 /// Caller must ensure that `gallo` is a valid, opaque pointer to
 /// `PicoDeGallo` returned by `gallo_init()`.
 pub unsafe extern "C" fn gallo_version(
-    gallo: *mut PicoDeGallo,
+    gallo: *const PicoDeGallo,
     major: *mut u16,
     minor: *mut u16,
     patch: *mut u32,
@@ -2102,7 +2552,7 @@ pub struct GalloDeviceInfo {
 /// `PicoDeGallo` returned by `gallo_init()`, and `out` points to a
 /// valid `GalloDeviceInfo`.
 pub unsafe extern "C" fn gallo_get_device_info(
-    gallo: *mut PicoDeGallo,
+    gallo: *const PicoDeGallo,
     out: *mut GalloDeviceInfo,
 ) -> Status {
     if gallo.is_null() {
@@ -2218,6 +2668,11 @@ mod tests {
             Status::DeviceInfoFailed as i32,
             Status::SchemaMismatch as i32,
             Status::LegacyFirmware as i32,
+            Status::Unsupported as i32,
+            Status::I2cBatchFailed as i32,
+            Status::SpiBatchFailed as i32,
+            Status::SpiTransferFailed as i32,
+            Status::SystemResetSubscriptionsFailed as i32,
         ];
         for code in error_codes {
             assert!(code < 0, "error code {code} should be negative");
@@ -2292,6 +2747,11 @@ mod tests {
             Status::DeviceInfoFailed as i32,
             Status::SchemaMismatch as i32,
             Status::LegacyFirmware as i32,
+            Status::Unsupported as i32,
+            Status::I2cBatchFailed as i32,
+            Status::SpiBatchFailed as i32,
+            Status::SpiTransferFailed as i32,
+            Status::SystemResetSubscriptionsFailed as i32,
         ];
         let unique: HashSet<i32> = codes.iter().copied().collect();
         assert_eq!(codes.len(), unique.len(), "duplicate status codes found");
@@ -2303,6 +2763,27 @@ mod tests {
     fn ping_null_device_returns_uninitialized() {
         let mut id = 42u32;
         let status = unsafe { gallo_ping(std::ptr::null_mut(), &mut id as *mut u32) };
+        assert_eq!(status, Status::Uninitialized);
+    }
+
+    #[test]
+    fn system_reset_subscriptions_null_device_returns_uninitialized() {
+        let mut out: u8 = 0xFF;
+        let status =
+            unsafe { gallo_system_reset_subscriptions(std::ptr::null(), &mut out as *mut u8) };
+        assert_eq!(status, Status::Uninitialized);
+        // Out parameter must not be written on Uninitialized.
+        assert_eq!(out, 0xFF);
+    }
+
+    #[test]
+    fn system_reset_subscriptions_null_out_is_allowed() {
+        // The function must not dereference a NULL `out_reset`. We can't
+        // exercise the success path without a real device, but we can
+        // confirm the NULL check on `gallo` is reached and returns
+        // Uninitialized without dereferencing `out_reset`.
+        let status =
+            unsafe { gallo_system_reset_subscriptions(std::ptr::null(), std::ptr::null_mut()) };
         assert_eq!(status, Status::Uninitialized);
     }
 
@@ -2357,6 +2838,213 @@ mod tests {
     fn spi_flush_null_device_returns_uninitialized() {
         let status = unsafe { gallo_spi_flush(std::ptr::null_mut()) };
         assert_eq!(status, Status::Uninitialized);
+    }
+
+    // --- gallo_spi_transfer (P1-2) ---
+
+    #[test]
+    fn spi_transfer_null_device_returns_uninitialized() {
+        let mut rx = [0u8; 4];
+        let tx = [0u8; 4];
+        let status =
+            unsafe { gallo_spi_transfer(std::ptr::null(), tx.as_ptr(), rx.as_mut_ptr(), tx.len()) };
+        assert_eq!(status, Status::Uninitialized);
+    }
+
+    #[test]
+    fn spi_transfer_null_write_buf_returns_invalid_argument() {
+        // Use a non-null device sentinel so the gallo null check passes;
+        // the next null check (write_buf) is what we want to exercise.
+        let sentinel = 0xDEAD_BEEFusize as *const PicoDeGallo;
+        let mut rx = [0u8; 4];
+        let status =
+            unsafe { gallo_spi_transfer(sentinel, std::ptr::null(), rx.as_mut_ptr(), rx.len()) };
+        assert_eq!(status, Status::InvalidArgument);
+    }
+
+    #[test]
+    fn spi_transfer_null_read_buf_returns_invalid_argument() {
+        let sentinel = 0xDEAD_BEEFusize as *const PicoDeGallo;
+        let tx = [0u8; 4];
+        let status =
+            unsafe { gallo_spi_transfer(sentinel, tx.as_ptr(), std::ptr::null_mut(), tx.len()) };
+        assert_eq!(status, Status::InvalidArgument);
+    }
+
+    #[test]
+    fn spi_transfer_oversized_returns_invalid_argument() {
+        let sentinel = 0xDEAD_BEEFusize as *const PicoDeGallo;
+        // u16::MAX + 1 exceeds the firmware transfer limit (the check is
+        // `> u16::MAX`). Buffers may be NULL because the size check fires
+        // before the buffer check — but here we keep them non-NULL so the
+        // test isolates the size guard.
+        let tx = [0u8; 1];
+        let mut rx = [0u8; 1];
+        let status = unsafe {
+            gallo_spi_transfer(
+                sentinel,
+                tx.as_ptr(),
+                rx.as_mut_ptr(),
+                u16::MAX as usize + 1,
+            )
+        };
+        assert_eq!(status, Status::InvalidArgument);
+    }
+
+    // --- gallo_spi_batch (P1-2) ---
+
+    #[test]
+    fn spi_batch_null_device_returns_uninitialized() {
+        let mut out_len: usize = 0;
+        let status = unsafe {
+            gallo_spi_batch(
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null_mut(),
+                0,
+                &mut out_len as *mut usize,
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(status, Status::Uninitialized);
+    }
+
+    #[test]
+    fn spi_batch_null_out_len_returns_invalid_argument() {
+        let sentinel = 0xDEAD_BEEFusize as *const PicoDeGallo;
+        let status = unsafe {
+            gallo_spi_batch(
+                sentinel,
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(status, Status::InvalidArgument);
+    }
+
+    #[test]
+    fn spi_batch_null_ops_with_nonzero_count_returns_invalid_argument() {
+        let sentinel = 0xDEAD_BEEFusize as *const PicoDeGallo;
+        let mut out_len: usize = 0;
+        let status = unsafe {
+            gallo_spi_batch(
+                sentinel,
+                0,
+                std::ptr::null(),
+                1,
+                std::ptr::null_mut(),
+                0,
+                &mut out_len as *mut usize,
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(status, Status::InvalidArgument);
+    }
+
+    #[test]
+    fn spi_batch_too_many_ops_returns_invalid_argument() {
+        let sentinel = 0xDEAD_BEEFusize as *const PicoDeGallo;
+        let mut out_len: usize = 0;
+        // Use a dangling but non-null ops pointer; the count check fires
+        // before the ops slice is dereferenced.
+        let dummy = std::ptr::NonNull::<GalloSpiBatchOp>::dangling().as_ptr();
+        let status = unsafe {
+            gallo_spi_batch(
+                sentinel,
+                0,
+                dummy,
+                lib::MAX_BATCH_OPS + 1,
+                std::ptr::null_mut(),
+                0,
+                &mut out_len as *mut usize,
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(status, Status::InvalidArgument);
+    }
+
+    // --- gallo_i2c_batch (P1-2) ---
+
+    #[test]
+    fn i2c_batch_null_device_returns_uninitialized() {
+        let mut out_len: usize = 0;
+        let status = unsafe {
+            gallo_i2c_batch(
+                std::ptr::null(),
+                0x50,
+                std::ptr::null(),
+                0,
+                std::ptr::null_mut(),
+                0,
+                &mut out_len as *mut usize,
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(status, Status::Uninitialized);
+    }
+
+    #[test]
+    fn i2c_batch_null_out_len_returns_invalid_argument() {
+        let sentinel = 0xDEAD_BEEFusize as *const PicoDeGallo;
+        let status = unsafe {
+            gallo_i2c_batch(
+                sentinel,
+                0x50,
+                std::ptr::null(),
+                0,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(status, Status::InvalidArgument);
+    }
+
+    #[test]
+    fn i2c_batch_null_ops_with_nonzero_count_returns_invalid_argument() {
+        let sentinel = 0xDEAD_BEEFusize as *const PicoDeGallo;
+        let mut out_len: usize = 0;
+        let status = unsafe {
+            gallo_i2c_batch(
+                sentinel,
+                0x50,
+                std::ptr::null(),
+                3,
+                std::ptr::null_mut(),
+                0,
+                &mut out_len as *mut usize,
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(status, Status::InvalidArgument);
+    }
+
+    #[test]
+    fn i2c_batch_too_many_ops_returns_invalid_argument() {
+        let sentinel = 0xDEAD_BEEFusize as *const PicoDeGallo;
+        let mut out_len: usize = 0;
+        let dummy = std::ptr::NonNull::<GalloI2cBatchOp>::dangling().as_ptr();
+        let status = unsafe {
+            gallo_i2c_batch(
+                sentinel,
+                0x50,
+                dummy,
+                lib::MAX_BATCH_OPS + 1,
+                std::ptr::null_mut(),
+                0,
+                &mut out_len as *mut usize,
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(status, Status::InvalidArgument);
     }
 
     #[test]
@@ -2868,5 +3556,9 @@ mod tests {
         assert_eq!(Status::SchemaMismatch as i32, -63);
         assert_eq!(Status::LegacyFirmware as i32, -64);
         assert_eq!(Status::Unsupported as i32, -65);
+        assert_eq!(Status::I2cBatchFailed as i32, -66);
+        assert_eq!(Status::SpiBatchFailed as i32, -67);
+        assert_eq!(Status::SpiTransferFailed as i32, -68);
+        assert_eq!(Status::SystemResetSubscriptionsFailed as i32, -69);
     }
 }

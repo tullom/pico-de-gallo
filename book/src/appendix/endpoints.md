@@ -68,6 +68,7 @@ from.
 | `onewire/write-pullup`    | Write bytes then assert strong pullup (parasitic power).     |
 | `onewire/search`          | Start a ROM search (returns first ROM).                      |
 | `onewire/search-next`     | Continue a ROM search.                                       |
+| `system/reset-subscriptions` | Tear down any GPIO subscriptions left over from a prior host. |
 
 ## Topics (server → client push)
 
@@ -77,7 +78,14 @@ from.
 
 A `gpio/event` stream is opened implicitly when you call
 `gpio/subscribe` for a given pin, and closes when you
-`gpio/unsubscribe`.
+`gpio/unsubscribe`. Subscriptions are server-side state that
+outlives the USB transport, so a host whose process crashed or
+was killed without unsubscribing will leave the pin owned by a
+firmware monitor task. Hosts should call
+`system/reset-subscriptions` once on connect (after
+`device/info`) to reclaim any such pins. The endpoint is
+idempotent and returns the number of subscriptions that were
+torn down.
 
 ## Adding Endpoints
 

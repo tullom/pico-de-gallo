@@ -1113,6 +1113,26 @@ impl PycoDeGallo {
             .map_err(|e| PyRuntimeError::new_err(format!("{e}")))
     }
 
+    /// Tear down any GPIO subscriptions left over from a previous host
+    /// session.
+    ///
+    /// Subscriptions are server-side state that survives the USB transport.
+    /// If a previous Python process crashed or was killed without calling
+    /// :meth:`gpio_unsubscribe`, the firmware still considers those pins
+    /// owned by a monitor task; calling this method on connect releases
+    /// them. The call is idempotent and safe to issue on a fresh device.
+    ///
+    /// Returns:
+    ///     int: Number of subscriptions that were torn down (0 if none
+    ///         were active).
+    ///
+    /// Raises:
+    ///     RuntimeError: If the underlying transport call fails.
+    fn system_reset_subscriptions(&self, py: Python<'_>) -> PyResult<u8> {
+        self.block(py, self.inner.system_reset_subscriptions())
+            .map_err(|e| PyRuntimeError::new_err(format!("{e}")))
+    }
+
     /// Validate that the connected firmware is wire-compatible with this
     /// host library, and return the device info on success.
     ///

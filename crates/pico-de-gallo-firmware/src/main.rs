@@ -80,8 +80,8 @@ use pico_de_gallo_internal::{
     I2cSetConfiguration, I2cWrite, I2cWriteRead, MAX_TRANSFER_SIZE, MICROSOFT_VID, OneWireRead, OneWireReset,
     OneWireSearch, OneWireSearchNext, OneWireWrite, OneWireWritePullup, PICO_DE_GALLO_PID, PingEndpoint, PwmDisable,
     PwmEnable, PwmGetConfiguration, PwmGetDutyCycle, PwmSetConfiguration, PwmSetDutyCycle, SpiBatch, SpiFlush,
-    SpiGetConfiguration, SpiRead, SpiSetConfiguration, SpiTransfer, SpiWrite, TOPICS_IN_LIST, TOPICS_OUT_LIST,
-    UartFlush, UartGetConfiguration, UartRead, UartSetConfiguration, UartWrite, Version,
+    SpiGetConfiguration, SpiRead, SpiSetConfiguration, SpiTransfer, SpiWrite, SystemResetSubscriptions, TOPICS_IN_LIST,
+    TOPICS_OUT_LIST, UartFlush, UartGetConfiguration, UartRead, UartSetConfiguration, UartWrite, Version,
 };
 use postcard_rpc::{
     define_dispatch,
@@ -338,6 +338,7 @@ define_dispatch! {
         | OneWireSearchNext    | async    | onewire_search_next_handler   |
         | Version              | async    | version_handler               |
         | GetDeviceInfo        | blocking | device_info_handler           |
+        | SystemResetSubscriptions | async | system_reset_subscriptions_handler |
     };
     topics_in: {
         list: TOPICS_IN_LIST;

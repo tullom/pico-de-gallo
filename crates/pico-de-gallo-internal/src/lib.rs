@@ -132,6 +132,14 @@ pub type GpioSetConfigurationResponse = Result<(), GpioError>;
 pub type GpioSubscribeResponse = Result<(), GpioError>;
 /// Response type for GPIO unsubscribe operations.
 pub type GpioUnsubscribeResponse = Result<(), GpioError>;
+/// Response type for `system/reset-subscriptions`.
+///
+/// Returns the number of GPIO subscriptions that were torn down (0 if
+/// none were active). Always succeeds — the endpoint is idempotent and
+/// is meant to be called by hosts on connect to clean up any
+/// subscriptions that survived a previous host crash, disconnect, or
+/// `nusb::Interface` drop.
+pub type SystemResetSubscriptionsResponse = u8;
 /// Response type for I2C bus configuration operations.
 pub type I2cSetConfigurationResponse = Result<(), I2cConfigError>;
 /// Response type for I2C bus scan operations.
@@ -294,6 +302,7 @@ endpoints! {
     | OneWireSearchNext     | ()                            | OneWireSearchResponse         | "onewire/search-next" |
     | Version               | ()                            | VersionInfo                   | "version"            |
     | GetDeviceInfo         | ()                            | DeviceInfo                    | "device/info"        |
+    | SystemResetSubscriptions | ()                         | SystemResetSubscriptionsResponse | "system/reset-subscriptions" |
 }
 
 topics! {

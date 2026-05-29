@@ -6,6 +6,7 @@ use pico_de_gallo_internal::{
     GpioDirection, GpioError, GpioGetRequest, GpioGetResponse, GpioPull, GpioPutRequest, GpioPutResponse,
     GpioSetConfigurationRequest, GpioSetConfigurationResponse, GpioState, GpioSubscribeRequest, GpioSubscribeResponse,
     GpioUnsubscribeRequest, GpioUnsubscribeResponse, GpioWaitRequest, GpioWaitResponse,
+    SystemResetSubscriptionsResponse,
 };
 use postcard_rpc::header::VarHeader;
 
@@ -235,4 +236,33 @@ pub(crate) async fn gpio_unsubscribe_handler(
     context.gpios[idx] = Some(flex);
 
     Ok(())
+}
+
+/// Handler for `system/reset-subscriptions` — tears down every active
+/// GPIO subscription and returns the count of pins that were reset.
+///
+/// Hosts call this immediately after [`PicoDeGallo::validate`] when they
+/// connect, so that any subscriptions left over from a previous host
+/// process (one that crashed, was killed, or dropped its `nusb::Interface`
+/// without sending `gpio/unsubscribe`) are cleaned up before the new host
+/// starts using GPIO pins. This is idempotent: calling it on a fresh
+/// firmware with no live subscriptions is cheap and returns `0`.
+pub(crate) async fn system_reset_subscriptions_handler(
+    context: &mut Context,
+    _header: VarHeader,
+    _req: (),
+) -> SystemResetSubscriptionsResponse {
+    let mut reset = 0u8;
+    for idx in 0..NUM_GPIOS {
+        // A `None` slot in `context.gpios` means the pin's `Flex` has been
+        // handed to the monitor task — i.e. there is a live subscription.
+        if context.gpios[idx].is_none() {
+            debug!("system reset: tearing down gpio subscription on pin={=usize}", idx);
+            GPIO_MONITOR_STOP[idx].signal(());
+            let flex = GPIO_MONITOR_RETURN[idx].receive().await;
+            context.gpios[idx] = Some(flex);
+            reset = reset.saturating_add(1);
+        }
+    }
+    reset
 }

@@ -91,6 +91,10 @@ that doesn't appear in your header means success.
 | `SchemaMismatch`           |   −63 | Schema version mismatch between host and firmware        |
 | `LegacyFirmware`           |   −64 | Firmware too old to support `device/info`                |
 | `Unsupported`              |   −65 | Peripheral not available on this hardware revision       |
+| `I2cBatchFailed`           |   −66 | I<sup>2</sup>C batch transaction failed                  |
+| `SpiBatchFailed`           |   −67 | SPI batch transaction failed                             |
+| `SpiTransferFailed`        |   −68 | SPI full-duplex transfer failed                          |
+| `SystemResetSubscriptionsFailed` | −69 | `system/reset-subscriptions` call failed              |
 
 ## Source of Truth
 
