@@ -6,13 +6,6 @@
   "tag-separator": "-v",
   "separate-pull-requests": true,
   "include-v-in-tag": false,
-  "plugins": [
-    {
-      "type": "cargo-workspace",
-      "merge": false,
-      "updateAllPackages": false
-    }
-  ],
   "packages": {
     "crates/pico-de-gallo-internal": {
       "package-name": "pico-de-gallo-internal",
