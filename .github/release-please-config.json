@@ -6,6 +6,8 @@
   "tag-separator": "-v",
   "separate-pull-requests": true,
   "include-v-in-tag": false,
+  "bump-minor-pre-major": true,
+  "bump-patch-for-minor-pre-major": true,
   "packages": {
     "crates/pico-de-gallo-internal": {
       "package-name": "pico-de-gallo-internal",
